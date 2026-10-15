@@ -1,0 +1,26 @@
+{
+  "name": "obsidian-mediascribe",
+  "version": "1.0.0",
+  "description": "Next-generation video and audio note-taking in Obsidian. Clickable timestamps, one-key frame screenshots, interactive transcripts, smart auto-pause, and YouTube & local media support.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "check": "tsc --noEmit"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "video-notes",
+    "youtube",
+    "transcripts",
+    "media-notes",
+    "timestamps",
+    "screenshots"
+  ],
+  "author": {
+    "name": "SSKhekhaliya",
+    "url": "https://www.sskhekhaliya.in/"
+  },
+  "license": "MIT"
+}

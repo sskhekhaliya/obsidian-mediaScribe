@@ -1,0 +1,1792 @@
+/* ==========================================================================
+   MediaScribe: Next-Generation Video Note-Taking Styles
+   ========================================================================== */
+
+/* Main View Container */
+.mediascribe-view-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  box-sizing: border-box;
+}
+
+/* Header Toolbar (Minimal YouTube Title Bar) */
+.mediascribe-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  gap: 8px;
+  flex-shrink: 0;
+  height: 32px;
+}
+
+.mediascribe-header-info {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mediascribe-header-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.mediascribe-header-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mediascribe-header-title {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: -0.1px;
+}
+
+.mediascribe-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* Minimal Circular Header Buttons */
+.mediascribe-btn-icon {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease-in-out;
+}
+
+.mediascribe-btn-icon:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  transform: scale(1.08);
+}
+
+.mediascribe-btn-icon.is-active {
+  background: transparent;
+  color: var(--interactive-accent);
+}
+
+.mediascribe-btn-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+
+/* Player Container (16:9 Aspect Ratio) */
+.mediascribe-player-container {
+  width: 100%;
+  background: var(--background-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Ambient Mode (Dynamic Video Glow / Ambilight Effect) */
+.mediascribe-ambient-layer {
+  position: absolute;
+  inset: -35px;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  mask-image: radial-gradient(ellipse at center, rgba(0, 0, 0, 1) 35%, rgba(0, 0, 0, 0) 78%);
+  -webkit-mask-image: radial-gradient(ellipse at center, rgba(0, 0, 0, 1) 35%, rgba(0, 0, 0, 0) 78%);
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mediascribe-ambient-layer.is-hidden {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  display: none !important;
+}
+
+.mediascribe-ambient-canvas {
+  width: 100%;
+  height: 100%;
+  filter: blur(48px) saturate(220%) brightness(1.15);
+  opacity: 0.75;
+  transform: scale(1.15);
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+}
+
+.mediascribe-ambient-youtube-backdrop {
+  position: absolute;
+  inset: -15%;
+  width: 130%;
+  height: 130%;
+  background-size: cover;
+  background-position: center;
+  filter: blur(55px) saturate(180%) brightness(1.0);
+  opacity: 0.45;
+  transform: scale(1.12);
+  transition: opacity 0.6s ease, filter 0.6s ease, transform 0.6s ease;
+  pointer-events: none;
+}
+
+.mediascribe-ambient-layer.is-playing .mediascribe-ambient-youtube-backdrop {
+  opacity: 0.8;
+  filter: blur(48px) saturate(240%) brightness(1.2);
+  transform: scale(1.18);
+  animation: mediascribe-ambient-breathe 6s ease-in-out infinite alternate;
+}
+
+@keyframes mediascribe-ambient-breathe {
+  0% {
+    transform: scale(1.1) rotate(0deg);
+    opacity: 0.58;
+  }
+  50% {
+    transform: scale(1.2) rotate(0.4deg);
+    opacity: 0.72;
+  }
+  100% {
+    transform: scale(1.14) rotate(-0.4deg);
+    opacity: 0.6;
+  }
+}
+
+.mediascribe-player-wrapper {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: transparent;
+  z-index: 2;
+}
+
+.mediascribe-player-wrapper.mediascribe-audio-wrapper {
+  padding-bottom: 0;
+  height: auto;
+  padding: 16px;
+  background: var(--background-secondary-alt);
+}
+
+.mediascribe-iframe,
+.mediascribe-media-element {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  object-fit: contain;
+}
+
+.mediascribe-player-size {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  margin: 0 auto;
+}
+
+.mediascribe-embedded-host.mediascribe-top-mode .mediascribe-player-size:not(.mediascribe-shorts-mode),
+.mediascribe-embedded-host.mediascribe-top-mode .mediascribe-player-size.mediascribe-clean-crop-active {
+  width: min(100%, calc(var(--mediascribe-embed-height, 340px) * 16 / 9)) !important;
+  max-width: 100% !important;
+  aspect-ratio: 16 / 9 !important;
+  height: auto !important;
+  margin: 0 auto !important;
+  position: relative !important;
+  display: block !important;
+}
+
+.mediascribe-view-root .mediascribe-player-size:not(.mediascribe-shorts-mode),
+.mediascribe-view-root .mediascribe-player-size.mediascribe-clean-crop-active {
+  width: 100% !important;
+  max-width: 100% !important;
+  aspect-ratio: 16 / 9 !important;
+  height: auto !important;
+  margin: 0 auto !important;
+  position: relative !important;
+  display: block !important;
+}
+
+.mediascribe-clean-crop-active .mediascribe-cropping-div {
+  overflow: hidden !important;
+  position: relative !important;
+  width: 100% !important;
+  height: auto !important;
+  display: block !important;
+}
+
+.mediascribe-clean-crop-active .mediascribe-div-to-crop {
+  overflow: hidden !important;
+  margin-top: -51% !important;
+  margin-bottom: -20% !important;
+  position: relative !important;
+  display: block !important;
+  width: 100% !important;
+  height: auto !important;
+}
+
+.mediascribe-clean-crop-active .mediascribe-youtube-wrapper {
+  position: relative !important;
+  overflow: hidden !important;
+  padding-top: 128.25% !important;
+  padding-bottom: 0 !important;
+  height: 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  aspect-ratio: unset !important;
+  display: block !important;
+}
+
+.mediascribe-clean-crop-active .mediascribe-youtube-wrapper .mediascribe-iframe {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 124% !important;
+  border: none !important;
+}
+
+/* ==========================================================================
+   YouTube Shorts & Vertical Video Layout (9:16)
+   ========================================================================== */
+.mediascribe-player-container.mediascribe-shorts-active {
+  aspect-ratio: unset !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 6px 0 !important;
+}
+
+.mediascribe-player-size.mediascribe-shorts-mode {
+  width: auto !important;
+  max-width: 100% !important;
+  height: var(--mediascribe-embed-height, 340px) !important;
+  max-height: 100% !important;
+  aspect-ratio: 9 / 16 !important;
+  margin: 0 auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  position: relative !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45) !important;
+  border-radius: var(--radius-m) !important;
+  overflow: hidden !important;
+}
+
+.mediascribe-embedded-host.mediascribe-top-mode .mediascribe-player-size.mediascribe-shorts-mode {
+  height: min(var(--mediascribe-embed-height, 340px), 420px) !important;
+  width: calc(min(var(--mediascribe-embed-height, 340px), 420px) * 9 / 16) !important;
+  max-width: 90% !important;
+  aspect-ratio: 9 / 16 !important;
+  margin: 0 auto !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-player-container.mediascribe-shorts-active {
+  aspect-ratio: unset !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 8px 0 !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-player-size.mediascribe-shorts-mode {
+  height: min(440px, 55vh) !important;
+  width: calc(min(440px, 55vh) * 9 / 16) !important;
+  max-width: 90% !important;
+  aspect-ratio: 9 / 16 !important;
+  margin: 0 auto !important;
+}
+
+.mediascribe-view-root .mediascribe-player-size.mediascribe-shorts-mode {
+  height: min(420px, 55vh) !important;
+  width: calc(min(420px, 55vh) * 9 / 16) !important;
+  max-width: 90% !important;
+  aspect-ratio: 9 / 16 !important;
+  margin: 0 auto !important;
+}
+
+.mediascribe-shorts-mode .mediascribe-cropping-div {
+  width: 100% !important;
+  height: 100% !important;
+  position: relative !important;
+  overflow: hidden !important;
+  display: block !important;
+  border-radius: var(--radius-m) !important;
+}
+
+.mediascribe-shorts-mode .mediascribe-div-to-crop {
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+  position: relative !important;
+  display: block !important;
+}
+
+.mediascribe-shorts-mode .mediascribe-player-wrapper {
+  width: 100% !important;
+  height: 100% !important;
+  aspect-ratio: 9 / 16 !important;
+  position: relative !important;
+  overflow: hidden !important;
+  display: block !important;
+  padding: 0 !important;
+}
+
+/* Precision 9:16 Shorts Alignment:
+   - Ultra-wide iframe width (1000%) centers the 9:16 video naturally in the middle while pushing all native YouTube overlays, title, avatar, and 'More videos' thousands of pixels to the far left and right edges.
+   - top: 0 and height: 100% ensures zero vertical crop and zero horizontal crop (100% of the video is completely intact).
+*/
+.mediascribe-shorts-mode .mediascribe-iframe,
+.mediascribe-shorts-mode iframe {
+  position: absolute !important;
+  top: 0 !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  width: 1000% !important;
+  height: 100% !important;
+  border: none !important;
+}
+
+.mediascribe-shorts-click-shield {
+  display: none;
+}
+
+.mediascribe-shorts-mode .mediascribe-shorts-click-shield {
+  display: block !important;
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  cursor: pointer !important;
+  z-index: 5 !important;
+}
+
+/* Uncropped 16:9 Thumbnail Overlay before Playback */
+.mediascribe-thumb-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-color: #000;
+  z-index: 10;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.mediascribe-thumb-overlay.is-hidden {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  display: none !important;
+}
+
+.mediascribe-thumb-play-btn {
+  width: 68px;
+  height: 48px;
+  background: rgba(28, 28, 28, 0.85);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.mediascribe-thumb-overlay:hover .mediascribe-thumb-play-btn {
+  background: #ff0000;
+  transform: scale(1.12);
+  box-shadow: 0 6px 24px rgba(255, 0, 0, 0.6);
+}
+
+.mediascribe-thumb-play-btn svg {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+}
+
+/* HTML5 Video Center Play Overlay (Local Video) */
+.mediascribe-video-wrapper video.mediascribe-media-element {
+  cursor: pointer;
+  object-fit: contain;
+  background: transparent;
+}
+
+.mediascribe-html5-center-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+  z-index: 6;
+  cursor: pointer;
+  transition: opacity 0.22s ease, visibility 0.22s ease, background 0.22s ease;
+}
+
+.mediascribe-html5-center-overlay.is-playing {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.mediascribe-html5-center-play-btn {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: rgba(22, 22, 26, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1.5px solid rgba(255, 255, 255, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mediascribe-html5-center-overlay:hover .mediascribe-html5-center-play-btn {
+  transform: scale(1.12);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, #ffffff);
+  border-color: transparent;
+  box-shadow: 0 10px 36px rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.55);
+}
+
+.mediascribe-html5-center-play-btn svg {
+  width: 30px;
+  height: 30px;
+  fill: currentColor;
+  margin-left: 3px;
+}
+
+.mediascribe-audio-wrapper .mediascribe-media-element {
+  position: static;
+  width: 100%;
+  height: 48px;
+}
+
+/* ==========================================================================
+   YouTube-Style Controls Card
+   ========================================================================== */
+.mediascribe-controls-card {
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 6px 12px 8px !important;
+  background: var(--background-secondary) !important;
+  border-bottom: 1px solid var(--background-modifier-border) !important;
+  gap: 6px !important;
+  flex-shrink: 0 !important;
+  user-select: none !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* Row 1: Time Display | Timeline Scrubber */
+.mediascribe-timeline-row {
+  display: flex !important;
+  align-items: center !important;
+  width: 100% !important;
+  gap: 8px !important;
+}
+
+.mediascribe-timeline-row .mediascribe-time-display {
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+  font-variant-numeric: tabular-nums !important;
+  white-space: nowrap !important;
+  user-select: none !important;
+  flex-shrink: 0 !important;
+  line-height: 1 !important;
+  padding: 0 2px !important;
+}
+
+.mediascribe-timeline-row .mediascribe-scrubber-container {
+  flex: 1 1 auto !important;
+  min-width: 60px !important;
+  width: auto !important;
+  height: 20px !important;
+  display: flex !important;
+  align-items: center !important;
+  position: relative !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  cursor: pointer !important;
+}
+
+/* Row 2: Buttons Row (Play Menu on Left, Other Menu on Right) */
+.mediascribe-buttons-row {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  row-gap: 6px !important;
+  column-gap: 8px !important;
+}
+
+.mediascribe-buttons-row .mediascribe-ctrl-left {
+  display: flex !important;
+  align-items: center !important;
+  gap: 3px !important;
+  flex-wrap: wrap !important;
+  flex-shrink: 0 !important;
+}
+
+.mediascribe-buttons-row .mediascribe-ctrl-right {
+  display: flex !important;
+  align-items: center !important;
+  gap: 3px !important;
+  flex-wrap: wrap !important;
+  flex-shrink: 0 !important;
+}
+
+/* Mid Scrubber & Timeline Markers (YouTube Flush Style) */
+.mediascribe-scrubber-container {
+  position: relative !important;
+  flex: 1 1 0% !important;
+  min-width: 80px !important;
+  width: auto !important;
+  height: 24px !important;
+  display: flex !important;
+  align-items: center !important;
+  cursor: pointer !important;
+  padding: 0 4px !important;
+  margin: 0 8px !important;
+  box-sizing: border-box !important;
+}
+
+.mediascribe-scrubber-container .mediascribe-progress-slider,
+.mediascribe-progress-slider {
+  width: 100% !important;
+  min-width: 100% !important;
+  max-width: 100% !important;
+  flex: 1 1 100% !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  height: 4px !important;
+  border-radius: 2px !important;
+  background: linear-gradient(
+    to right,
+    var(--interactive-accent) 0%,
+    var(--interactive-accent) var(--progress-percent, 0%),
+    rgba(128, 128, 128, 0.28) var(--progress-percent, 0%),
+    rgba(128, 128, 128, 0.28) 100%
+  ) !important;
+  outline: none !important;
+  cursor: pointer !important;
+  transition: height 0.15s ease !important;
+  z-index: 2 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  box-sizing: border-box !important;
+}
+
+.mediascribe-scrubber-container:hover .mediascribe-progress-slider,
+.mediascribe-progress-slider:active {
+  height: 6px !important;
+}
+
+.mediascribe-progress-slider::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 50% !important;
+  background: var(--interactive-accent) !important;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.45) !important;
+  cursor: pointer !important;
+  border: none !important;
+  box-sizing: border-box !important;
+  position: relative !important;
+  top: 0 !important;
+  margin: 0 !important;
+  margin-top: -3px !important;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mediascribe-scrubber-container:hover .mediascribe-progress-slider::-webkit-slider-thumb,
+.mediascribe-progress-slider:active::-webkit-slider-thumb {
+  transform: scale(1.25);
+  margin-top: -3px !important;
+}
+
+.mediascribe-progress-slider::-moz-range-thumb {
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 50% !important;
+  background: var(--interactive-accent) !important;
+  border: none !important;
+  cursor: pointer !important;
+  box-sizing: border-box !important;
+}
+
+/* Timeline Marker Pins (YouTube Chapter Ticks) */
+.mediascribe-timeline-markers {
+  position: absolute !important;
+  top: 50% !important;
+  left: 4px !important;
+  right: 4px !important;
+  width: calc(100% - 8px) !important;
+  height: 0 !important;
+  pointer-events: none !important;
+  z-index: 3 !important;
+}
+
+.mediascribe-marker-pin {
+  position: absolute;
+  top: -3.5px;
+  width: 3px;
+  height: 7px;
+  background: #f59e0b;
+  border-radius: 1.5px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 0 4px rgba(245, 158, 11, 0.6);
+}
+
+.mediascribe-marker-pin:hover {
+  transform: translateX(-50%) scale(1.6);
+  background: #fbbf24;
+  height: 9px;
+  top: -4.5px;
+  z-index: 10;
+}
+
+/* Control Groups */
+.mediascribe-ctrl-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.mediascribe-ctrl-left {
+  flex-shrink: 0;
+}
+
+.mediascribe-ctrl-right {
+  flex-shrink: 0;
+}
+
+/* Minimal Flat YouTube-Style Icon Buttons */
+.mediascribe-ctrl-btn {
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--text-normal);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.mediascribe-ctrl-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  transform: scale(1.08);
+}
+
+.mediascribe-ctrl-btn.is-active {
+  color: var(--interactive-accent);
+}
+
+.mediascribe-ctrl-btn.is-active::after {
+  content: "";
+  position: absolute;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+}
+
+.mediascribe-ctrl-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* Prominent Play/Pause Button */
+.mediascribe-play-btn {
+  width: 34px;
+  height: 34px;
+  color: var(--text-normal);
+}
+
+.mediascribe-play-btn:hover {
+  transform: scale(1.12);
+  background: var(--background-modifier-hover);
+}
+
+.mediascribe-play-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* YouTube Expandable Volume Group */
+.mediascribe-volume-group {
+  display: flex !important;
+  align-items: center !important;
+  position: relative !important;
+}
+
+.mediascribe-volume-slider {
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.2s ease, opacity 0.2s ease, margin 0.2s ease !important;
+  height: 4px !important;
+  cursor: pointer !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background: linear-gradient(
+    to right,
+    var(--text-normal) 0%,
+    var(--text-normal) var(--volume-percent, 100%),
+    rgba(128, 128, 128, 0.28) var(--volume-percent, 100%),
+    rgba(128, 128, 128, 0.28) 100%
+  ) !important;
+  border-radius: 2px !important;
+  outline: none !important;
+  box-sizing: border-box !important;
+}
+
+.mediascribe-volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 50% !important;
+  background: var(--text-normal) !important;
+  cursor: pointer !important;
+  border: none !important;
+  box-sizing: border-box !important;
+  position: relative !important;
+  top: 0 !important;
+  margin: 0 !important;
+  margin-top: -3px !important;
+}
+
+.mediascribe-volume-slider::-moz-range-thumb {
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 50% !important;
+  background: var(--text-normal) !important;
+  border: none !important;
+  cursor: pointer !important;
+  box-sizing: border-box !important;
+}
+
+.mediascribe-volume-group:hover .mediascribe-volume-slider,
+.mediascribe-volume-group:focus-within .mediascribe-volume-slider {
+  width: 52px !important;
+  min-width: 52px !important;
+  max-width: 52px !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  margin-left: 4px !important;
+  margin-right: 2px !important;
+}
+
+/* YouTube Time Display */
+.mediascribe-time-display {
+  font-family: var(--font-interface);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+  margin-left: 4px;
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
+/* Circular Playback Speed Button (Matching other icon buttons) */
+.mediascribe-speed-btn {
+  font-family: var(--font-interface);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.mediascribe-speed-btn:hover {
+  color: var(--text-normal);
+}
+
+.mediascribe-speed-select option {
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+/* A-B Loop Bar */
+.mediascribe-loop-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: var(--background-secondary-alt);
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 12px;
+}
+
+.mediascribe-loop-bar.is-hidden {
+  display: none;
+}
+
+.mediascribe-loop-title {
+  font-weight: 600;
+  color: var(--interactive-accent);
+}
+
+.mediascribe-btn-sm {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 2px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mediascribe-btn-sm:hover {
+  background: var(--background-modifier-hover);
+}
+
+.mediascribe-loop-val {
+  font-family: var(--font-monospace);
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   Clickable Timestamp Pills in Notes (Reading View & Live Preview)
+   ========================================================================== */
+.mediascribe-timestamp-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.12);
+  color: var(--interactive-accent);
+  border: 1px solid rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.25);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--font-monospace);
+  font-size: 0.9em;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  text-decoration: none !important;
+  transition: all 0.15s ease;
+}
+
+.mediascribe-timestamp-link:hover {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 6px rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.35);
+  transform: translateY(-1px);
+}
+
+/* ==========================================================================
+   In-Note Embedded Player Host & Sticky Controls
+   ========================================================================== */
+.workspace-leaf-content[data-type="markdown"] .view-content {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  position: relative !important;
+}
+
+/* Vertical Dock Mode (Side-by-side with Note Editor) */
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-vertical {
+  flex-direction: row !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left .mediascribe-embedded-host {
+  order: 0 !important;
+  width: var(--mediascribe-dock-width, 420px) !important;
+  min-width: 280px !important;
+  max-width: 65% !important;
+  height: 100% !important;
+  border-bottom: none !important;
+  border-right: 2px solid var(--background-modifier-border) !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left > .markdown-source-view.mod-cm6,
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left > .markdown-reading-view {
+  order: 1 !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right .mediascribe-embedded-host {
+  order: 2 !important;
+  width: var(--mediascribe-dock-width, 420px) !important;
+  min-width: 280px !important;
+  max-width: 65% !important;
+  height: 100% !important;
+  border-bottom: none !important;
+  border-left: 2px solid var(--background-modifier-border) !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right > .markdown-source-view.mod-cm6,
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right > .markdown-reading-view {
+  order: 1 !important;
+}
+
+.mediascribe-embedded-host {
+  flex: 0 0 auto !important;
+  width: 100% !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 15 !important;
+  background: var(--background-primary) !important;
+  border-bottom: 2px solid var(--background-modifier-border) !important;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12) !important;
+  margin: 0 0 4px 0 !important;
+  border-radius: 0 0 var(--radius-m) var(--radius-m) !important;
+  overflow: hidden !important;
+}
+
+/* Inside Vertical Mode Host */
+.mediascribe-embedded-host.mediascribe-vertical-mode {
+  display: flex !important;
+  flex-direction: column !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  height: 100% !important;
+  position: relative !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-player-area {
+  flex: 0 0 auto !important;
+  width: 100% !important;
+  height: auto !important;
+  max-height: none !important;
+  flex-direction: column !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-player-container:not(.mediascribe-shorts-active) {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  aspect-ratio: 16 / 9 !important;
+  min-height: 160px !important;
+  flex: 0 0 auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-video-wrapper {
+  position: relative !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 100% !important;
+  aspect-ratio: 16 / 9 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-video-wrapper video.mediascribe-media-element {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-player-size:not(.mediascribe-shorts-mode),
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-player-size.mediascribe-clean-crop-active {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  aspect-ratio: 16 / 9 !important;
+  margin: 0 !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-clean-crop-active .mediascribe-cropping-div,
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-clean-crop-active .mediascribe-div-to-crop {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-side-panel {
+  width: 100% !important;
+  height: 240px !important;
+  max-height: 240px !important;
+  border-left: none !important;
+  border-top: 1px solid var(--background-modifier-border) !important;
+}
+
+/* Vertical Resize Handles */
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left .mediascribe-resize-handle {
+  position: absolute !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  right: 0 !important;
+  left: auto !important;
+  width: 6px !important;
+  height: 100% !important;
+  cursor: col-resize !important;
+  z-index: 20 !important;
+  background: transparent !important;
+  border-right: 2px solid transparent !important;
+  margin-top: 0 !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left .mediascribe-resize-handle:hover,
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left .mediascribe-resize-handle.is-dragging {
+  border-right: 2px solid var(--interactive-accent) !important;
+  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.1) !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right .mediascribe-resize-handle {
+  position: absolute !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: auto !important;
+  width: 6px !important;
+  height: 100% !important;
+  cursor: col-resize !important;
+  z-index: 20 !important;
+  background: transparent !important;
+  border-left: 2px solid transparent !important;
+  margin-top: 0 !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right .mediascribe-resize-handle:hover,
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right .mediascribe-resize-handle.is-dragging {
+  border-left: 2px solid var(--interactive-accent) !important;
+  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.1) !important;
+}
+
+
+.workspace-leaf-content[data-type="markdown"] .view-content > .markdown-source-view.mod-cm6,
+.workspace-leaf-content[data-type="markdown"] .view-content > .markdown-reading-view {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content > .markdown-source-view.mod-cm6 .cm-editor,
+.workspace-leaf-content[data-type="markdown"] .view-content > .markdown-source-view.mod-cm6 .cm-scroller {
+  height: 100% !important;
+}
+
+.mediascribe-embedded-header {
+  background: var(--background-secondary-alt);
+}
+
+/* Player Viewport Area & Constrained Height */
+.mediascribe-player-area {
+  position: relative;
+  width: 100%;
+  height: var(--mediascribe-embed-height, 340px);
+  max-height: 700px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.mediascribe-embedded-host .mediascribe-player-container {
+  height: 100%;
+  max-height: 100%;
+  width: 100%;
+  flex: 1 1 0%;
+  min-width: 0;
+  background: var(--background-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  transition: flex 0.2s ease;
+}
+
+/* Embedded Host: HTML5 Video Wrapper (Local Video) */
+.mediascribe-embedded-host.mediascribe-top-mode .mediascribe-video-wrapper {
+  position: relative;
+  width: min(100%, calc(var(--mediascribe-embed-height, 340px) * 16 / 9));
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  padding: 0 !important;
+  margin: auto;
+  overflow: hidden;
+  z-index: 2;
+}
+
+.mediascribe-embedded-host .mediascribe-video-wrapper video.mediascribe-media-element {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: transparent;
+  border: none;
+}
+
+/* Embedded Host: HTML5 Audio Wrapper */
+.mediascribe-embedded-host .mediascribe-audio-wrapper {
+  height: auto;
+  aspect-ratio: auto;
+  width: 100%;
+  padding: 10px 14px;
+  position: relative;
+  z-index: 2;
+}
+
+/* Embedded Host: YouTube Standard Iframe (when crop active is not applied) */
+.mediascribe-embedded-host .mediascribe-youtube-wrapper:not(.mediascribe-clean-crop-active *) {
+  position: relative;
+  width: min(100%, calc(var(--mediascribe-embed-height, 340px) * 16 / 9));
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  margin: auto;
+  overflow: hidden;
+  z-index: 2;
+}
+
+.mediascribe-embedded-host .mediascribe-iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* Collapsed Mini-Player Mode */
+.mediascribe-embedded-host.is-collapsed .mediascribe-player-area {
+  height: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.mediascribe-embedded-host.is-collapsed .mediascribe-side-panel {
+  display: none !important;
+}
+
+.mediascribe-embedded-host.is-collapsed .mediascribe-resize-handle {
+  display: none !important;
+}
+
+.mediascribe-embedded-host.is-collapsed .mediascribe-loop-bar {
+  display: none !important;
+}
+
+/* Resize Handle */
+.mediascribe-resize-handle {
+  width: 100%;
+  height: 6px;
+  cursor: row-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+  position: relative;
+  margin-top: -2px;
+}
+
+.mediascribe-resize-handle:hover,
+.mediascribe-resize-handle.is-dragging {
+  background: var(--interactive-accent);
+}
+
+/* Playlist Badge */
+.mediascribe-playlist-badge {
+  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.18);
+  color: var(--interactive-accent);
+  border: 1px solid rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.3);
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+/* Side-by-Side Panel (Houses Playlist and Captions/Transcript) */
+.mediascribe-side-panel {
+  width: 320px;
+  min-width: 250px;
+  max-width: 48%;
+  height: 100%;
+  flex-shrink: 0;
+  background: var(--background-secondary-alt);
+  border-left: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  z-index: 10;
+  animation: mediascribe-side-slide-in 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes mediascribe-side-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.mediascribe-side-panel.is-hidden {
+  display: none !important;
+}
+
+.mediascribe-side-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--background-primary-alt);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+  min-height: 36px;
+}
+
+.mediascribe-side-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.mediascribe-side-tab-btn {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.mediascribe-side-tab-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.mediascribe-side-tab-btn.is-active {
+  color: var(--interactive-accent);
+  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.15);
+  font-weight: 600;
+}
+
+.mediascribe-side-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-normal);
+  padding: 2px 4px;
+}
+
+.mediascribe-side-panel-close-btn {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.mediascribe-side-panel-close-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.mediascribe-side-panel-close-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mediascribe-side-panel-content {
+  flex: 1 1 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.mediascribe-side-view {
+  flex: 1 1 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.mediascribe-side-view.is-hidden {
+  display: none !important;
+}
+
+.mediascribe-playlist-drawer {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mediascribe-playlist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.mediascribe-playlist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-normal);
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.mediascribe-playlist-row:hover {
+  background: var(--background-modifier-hover);
+  color: var(--interactive-accent);
+}
+
+.mediascribe-playlist-row.is-active {
+  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.18);
+  color: var(--interactive-accent);
+  font-weight: 600;
+  border-left: 2px solid var(--interactive-accent);
+}
+
+.mediascribe-playlist-num {
+  font-family: var(--font-monospace);
+  color: var(--text-muted);
+  font-size: 11px;
+  width: 22px;
+  flex-shrink: 0;
+}
+
+.mediascribe-playlist-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mediascribe-playlist-info {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 0;
+}
+
+/* Transcript Panel Styles */
+.mediascribe-transcript-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--background-secondary);
+  border-top: 1px solid var(--background-modifier-border);
+  border-radius: 0 0 var(--radius-m) var(--radius-m);
+  max-height: 250px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.mediascribe-side-panel .mediascribe-transcript-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100%;
+  flex: 1 1 auto;
+  background: transparent;
+  border-top: none;
+  border-radius: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.mediascribe-side-panel .mediascribe-transcript-toolbar {
+  flex-shrink: 0;
+  background: var(--background-secondary-alt);
+}
+
+.mediascribe-side-panel .mediascribe-transcript-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.mediascribe-transcript-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--background-primary-alt);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.mediascribe-transcript-search {
+  flex: 1;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-normal);
+  outline: none;
+}
+
+.mediascribe-transcript-search:focus {
+  border-color: var(--interactive-accent);
+}
+
+.mediascribe-transcript-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mediascribe-transcript-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mediascribe-transcript-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  transition: background 0.15s ease;
+  font-size: 12px;
+}
+
+.mediascribe-transcript-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.mediascribe-transcript-row.is-active {
+  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.15);
+  border-left: 2px solid var(--interactive-accent);
+  padding-left: 4px;
+}
+
+.mediascribe-transcript-time {
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+  padding: 1px 6px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.15s ease;
+}
+
+.mediascribe-transcript-time:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+
+.mediascribe-transcript-text {
+  flex: 1;
+  line-height: 1.4;
+  color: var(--text-normal);
+  word-break: break-word;
+}
+
+.mediascribe-transcript-quote-btn {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+  border-radius: var(--radius-s);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mediascribe-transcript-row:hover .mediascribe-transcript-quote-btn {
+  opacity: 1;
+}
+
+.mediascribe-transcript-quote-btn:hover {
+  color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+}
+
+.mediascribe-transcript-empty {
+  padding: 20px 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.mediascribe-transcript-empty.is-loading {
+  font-style: normal;
+  color: var(--interactive-accent);
+}
+
+/* Utility */
+.is-hidden {
+  display: none !important;
+}
+
+/* ==========================================================================
+   Video Description Panel & Interactive Timestamps
+   ========================================================================== */
+.mediascribe-side-view.mediascribe-description-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--background-secondary);
+}
+
+.mediascribe-side-view.mediascribe-description-view.is-hidden,
+.mediascribe-side-view.mediascribe-playlist-view.is-hidden,
+.mediascribe-side-view.mediascribe-transcript-view.is-hidden,
+.mediascribe-side-view.is-hidden,
+.mediascribe-description-view.is-hidden {
+  display: none !important;
+}
+
+.mediascribe-description-container {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  overflow: hidden !important;
+  padding: 8px 10px !important;
+  box-sizing: border-box !important;
+}
+
+.mediascribe-desc-header {
+  margin-bottom: 8px !important;
+  padding-bottom: 6px !important;
+  border-bottom: 1px solid var(--background-modifier-border) !important;
+}
+
+.mediascribe-desc-title {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: var(--text-normal) !important;
+  line-height: 1.35 !important;
+  margin-bottom: 2px !important;
+}
+
+.mediascribe-desc-author {
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+}
+
+.mediascribe-desc-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding-bottom: 8px !important;
+  border-bottom: 1px solid var(--background-modifier-border) !important;
+  margin-bottom: 8px !important;
+  flex-shrink: 0 !important;
+}
+
+.mediascribe-desc-action-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  background: var(--background-primary) !important;
+  border: 1px solid var(--background-modifier-border) !important;
+  border-radius: var(--radius-s) !important;
+  padding: 3px 8px !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  color: var(--text-normal) !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.mediascribe-desc-action-btn:hover {
+  background: var(--background-modifier-hover) !important;
+  border-color: var(--interactive-accent) !important;
+  color: var(--interactive-accent) !important;
+}
+
+.mediascribe-desc-action-btn svg {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+.mediascribe-desc-body {
+  flex: 1 1 auto !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  font-size: 12px !important;
+  line-height: 1.55 !important;
+  color: var(--text-muted) !important;
+  user-select: text !important;
+  word-break: break-word !important;
+  padding-right: 4px !important;
+}
+
+.mediascribe-desc-line {
+  margin-bottom: 3px !important;
+}
+
+.mediascribe-desc-empty-line {
+  height: 8px !important;
+}
+
+.mediascribe-desc-link {
+  color: var(--interactive-accent) !important;
+  text-decoration: underline !important;
+  word-break: break-all !important;
+}
+
+.mediascribe-desc-link:hover {
+  color: var(--interactive-accent-hover) !important;
+}
+
+.mediascribe-timestamp-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.18) !important;
+  color: var(--interactive-accent) !important;
+  font-weight: 600 !important;
+  font-family: var(--font-monospace) !important;
+  padding: 1px 5px !important;
+  border-radius: var(--radius-s) !important;
+  cursor: pointer !important;
+  margin: 0 2px !important;
+  transition: all 0.15s ease !important;
+}
+
+.mediascribe-timestamp-pill:hover {
+  background: var(--interactive-accent) !important;
+  color: var(--text-on-accent) !important;
+  transform: translateY(-1px) !important;
+}
+
+.mediascribe-desc-loading,
+.mediascribe-desc-empty {
+  padding: 16px !important;
+  text-align: center !important;
+  color: var(--text-muted) !important;
+  font-style: italic !important;
+}
+
+.mediascribe-playlist-dur {
+  margin-left: auto !important;
+  font-size: 10px !important;
+  color: var(--text-muted) !important;
+  font-family: var(--font-monospace) !important;
+  padding-left: 6px !important;
+}
+

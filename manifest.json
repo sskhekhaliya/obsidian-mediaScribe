@@ -1,0 +1,11 @@
+{
+  "id": "mediascribe",
+  "name": "MediaScribe",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Best-in-class video & audio note-taking in Obsidian. Clickable timestamps, one-key frame screenshots, interactive transcripts, smart auto-pause while typing, and YouTube & local file support.",
+  "author": "SSKhekhaliya",
+  "authorUrl": "https://www.sskhekhaliya.in/",
+  "fundingUrl": "https://buymeacoffee.com/sskhekhaliya",
+  "isDesktopOnly": false
+}
