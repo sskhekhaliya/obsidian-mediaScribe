@@ -60,6 +60,13 @@ export function parseTimestamp(input: string): number | null {
     if (fromLabel !== null) return fromLabel;
   }
 
+  // Extract t= parameter from URLs: e.g. https://youtu.be/xxx?t=115 or video.mp4#t=115
+  const urlParamMatch = str.match(/[?&#]t=([0-9hms]+)/i);
+  if (urlParamMatch && urlParamMatch[1]) {
+    const fromParam = parseTimestamp(urlParamMatch[1]);
+    if (fromParam !== null) return fromParam;
+  }
+
   // Strip #t= or t= prefix
   if (str.toLowerCase().startsWith("#t=")) {
     str = str.substring(3).trim();

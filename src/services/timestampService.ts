@@ -1,14 +1,21 @@
 import { App, MarkdownView, Notice } from "obsidian";
-import { IMediaPlayer, MediaScribeSettings } from "../types";
+import { IMediaPlayer, MediaScribeSettings, MediaSourceInfo } from "../types";
 import { formatSeconds, parseTimestamp } from "../utils/time";
 
 export class TimestampService {
   private settings: MediaScribeSettings;
   private playerGetter: () => IMediaPlayer | null;
+  private sourceGetter?: () => MediaSourceInfo | null;
 
-  constructor(_app: App, settings: MediaScribeSettings, playerGetter: () => IMediaPlayer | null) {
+  constructor(
+    _app: App,
+    settings: MediaScribeSettings,
+    playerGetter: () => IMediaPlayer | null,
+    sourceGetter?: () => MediaSourceInfo | null
+  ) {
     this.settings = settings;
     this.playerGetter = playerGetter;
+    this.sourceGetter = sourceGetter;
   }
 
   public updateSettings(settings: MediaScribeSettings): void {
@@ -23,6 +30,22 @@ export class TimestampService {
     const secInt = Math.floor(seconds);
 
     switch (this.settings.timestampFormat) {
+      case "full_url_link": {
+        const source = this.sourceGetter ? this.sourceGetter() : null;
+        if (source) {
+          if (source.type === "youtube" && source.videoId) {
+            return `[${formattedTime}](https://youtu.be/${source.videoId}?t=${secInt})`;
+          }
+          if (source.isLocal && source.localFile) {
+            return `[${formattedTime}](${encodeURI(source.localFile.name)}#t=${secInt})`;
+          }
+          if (source.url && (source.url.startsWith("http://") || source.url.startsWith("https://"))) {
+            const separator = source.url.includes("?") ? "&" : "?";
+            return `[${formattedTime}](${source.url}${separator}t=${secInt})`;
+          }
+        }
+        return `[${formattedTime}](#t=${secInt})`;
+      }
       case "markdown_link":
         return `[${formattedTime}](#t=${secInt})`;
       case "wikilink":
@@ -33,7 +56,7 @@ export class TimestampService {
         return formattedTime;
       case "bracket":
       default:
-        return `[${formattedTime}](#t=${secInt})`;
+        return `[${formattedTime}]`;
     }
   }
 

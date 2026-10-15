@@ -25,7 +25,8 @@ export class YouTubePlayer extends BasePlayer {
     hideNativeControls: boolean = false,
     hideOverlays: boolean = false,
     _cropZoom: number = 1.0,
-    isShorts: boolean = false
+    isShorts: boolean = false,
+    autoPlay: boolean = false
   ) {
     super();
     this.videoId = videoId;
@@ -34,12 +35,18 @@ export class YouTubePlayer extends BasePlayer {
     this.hideNativeControls = hideNativeControls;
     this.hideOverlays = hideOverlays;
     this.isShorts = isShorts;
+    this.autoPlay = autoPlay;
     this.currentTime = initialTime;
+    this.pendingSeekTime = initialTime > 0 ? initialTime : null;
   }
 
+  private autoPlay: boolean = false;
   private playerSizeEl: HTMLElement | null = null;
   private croppingDivEl: HTMLElement | null = null;
   private clickShieldEl: HTMLElement | null = null;
+  private thumbPlayBtnEl: HTMLElement | null = null;
+  private _hasEnded: boolean = false;
+  private pendingSeekTime: number | null = null;
 
   public mount(container: HTMLElement): void {
     this.containerEl = container;
@@ -61,15 +68,12 @@ export class YouTubePlayer extends BasePlayer {
 
     const controlsVal = (this.hideNativeControls || this.hideOverlays || this.isShorts) ? 0 : 1;
     const fsVal = 1;
-    const params = `enablejsapi=1&controls=${controlsVal}&rel=0&playsinline=1&modestbranding=1&iv_load_policy=3&cc_load_policy=3&cc_lang_pref=off&fs=${fsVal}&autoplay=0`;
+    const autoPlayVal = this.autoPlay ? 1 : 0;
+    const params = `enablejsapi=1&controls=${controlsVal}&rel=0&playsinline=1&modestbranding=1&iv_load_policy=3&cc_load_policy=3&cc_lang_pref=off&fs=${fsVal}&autoplay=${autoPlayVal}`;
 
     let src = "";
-    if (this.playlistId) {
-      if (this.videoId) {
-        src = `https://www.youtube.com/embed/${this.videoId}?list=${this.playlistId}&${params}&start=${Math.floor(this.initialTime)}`;
-      } else {
-        src = `https://www.youtube.com/embed/videoseries?list=${this.playlistId}&${params}`;
-      }
+    if (this.playlistId && !this.videoId) {
+      src = `https://www.youtube.com/embed/videoseries?list=${this.playlistId}&${params}`;
     } else {
       src = `https://www.youtube.com/embed/${this.videoId}?${params}&start=${Math.floor(this.initialTime)}`;
     }
@@ -95,8 +99,8 @@ export class YouTubePlayer extends BasePlayer {
       playerSize.addClass("mediascribe-clean-crop-active");
     }
 
-    // High-res uncropped thumbnail overlay before video playback begins
-    if (this.videoId && (this.hideOverlays || this.isShorts)) {
+    // High-res uncropped thumbnail overlay before video playback begins (skip if autoPlaying)
+    if (!this.autoPlay && (this.hideOverlays || this.isShorts)) {
       this.createThumbnailOverlay(croppingDiv);
     }
 
@@ -184,12 +188,19 @@ export class YouTubePlayer extends BasePlayer {
           this.disableCaptions();
           this.hideThumbnail();
           this._isPlaying = true;
+          if (this.pendingSeekTime !== null && this.pendingSeekTime > 0) {
+            const seek = this.pendingSeekTime;
+            this.pendingSeekTime = null;
+            this.seekTo(seek);
+          }
           this.emit("play");
         } else if (state === 2) { // Paused
           this._isPlaying = false;
           this.emit("pause");
         } else if (state === 0) { // Ended
           this._isPlaying = false;
+          this.pendingSeekTime = null;
+          this.showEndedOverlay();
           this.emit("ended");
         }
       }
@@ -213,6 +224,11 @@ export class YouTubePlayer extends BasePlayer {
         const info = data.info;
 
         if (typeof info.currentTime === "number") {
+          if (this.pendingSeekTime !== null && this.pendingSeekTime > 0 && Math.abs(info.currentTime - this.pendingSeekTime) > 2) {
+            const seek = this.pendingSeekTime;
+            this.pendingSeekTime = null;
+            this.seekTo(seek);
+          }
           this.currentTime = info.currentTime;
           this.emit("timeupdate", this.currentTime);
           if (this.duration <= 0) {
@@ -229,8 +245,12 @@ export class YouTubePlayer extends BasePlayer {
           this.volume = info.volume;
         }
 
-        if (typeof info.playlistIndex === "number") {
+        if (typeof info.playlistIndex === "number" && info.playlistIndex >= 0 && Boolean(this.playlistId && !this.videoId)) {
           this.emit("playlistindexchange", info.playlistIndex);
+        }
+
+        if (info.videoData && info.videoData.video_id) {
+          this.setVideoId(info.videoData.video_id);
         }
       }
     };
@@ -238,18 +258,50 @@ export class YouTubePlayer extends BasePlayer {
     window.addEventListener("message", this.messageListener);
   }
 
-  private createThumbnailOverlay(container: HTMLElement): void {
-    if (!this.videoId || this.thumbOverlayEl) return;
-    this.thumbOverlayEl = container.createDiv({ cls: "mediascribe-thumb-overlay" });
-    this.updateThumbnailImage();
+  public setVideoId(videoId: string): void {
+    if (!videoId || this.videoId === videoId) return;
+    this.videoId = videoId;
+    if (!this._isPlaying) {
+      if (this.thumbOverlayEl) {
+        this.thumbOverlayEl.removeClass("is-hidden");
+        this.updateThumbnailImage();
+      } else if (this.croppingDivEl) {
+        this.createThumbnailOverlay(this.croppingDivEl);
+      }
+    }
+  }
 
-    const playBtn = this.thumbOverlayEl.createDiv({ cls: "mediascribe-thumb-play-btn" });
-    setIcon(playBtn, "play");
+  private createThumbnailOverlay(container: HTMLElement): void {
+    if (this.thumbOverlayEl) return;
+    this.thumbOverlayEl = container.createDiv({ cls: "mediascribe-thumb-overlay" });
+    if (this.videoId) {
+      this.updateThumbnailImage();
+    }
+
+    this.thumbPlayBtnEl = this.thumbOverlayEl.createDiv({ cls: "mediascribe-thumb-play-btn is-play-state" });
+    setIcon(this.thumbPlayBtnEl, "play");
 
     this.thumbOverlayEl.addEventListener("click", () => {
-      this.hideThumbnail();
       this.play();
     });
+  }
+
+  private showEndedOverlay(): void {
+    this._hasEnded = true;
+    if (!this.thumbOverlayEl && this.croppingDivEl) {
+      this.createThumbnailOverlay(this.croppingDivEl);
+    }
+    if (this.thumbOverlayEl) {
+      this.updateThumbnailImage();
+      if (this.thumbPlayBtnEl) {
+        this.thumbPlayBtnEl.empty();
+        this.thumbPlayBtnEl.removeClass("is-play-state");
+        this.thumbPlayBtnEl.addClass("is-replay-state");
+        setIcon(this.thumbPlayBtnEl, "rotate-ccw");
+        this.thumbPlayBtnEl.setAttribute("title", "Replay");
+      }
+      this.thumbOverlayEl.removeClass("is-hidden");
+    }
   }
 
   private updateThumbnailImage(): void {
@@ -276,24 +328,53 @@ export class YouTubePlayer extends BasePlayer {
       imgCheck.src = oar2;
       this.thumbOverlayEl.style.backgroundImage = `url('${oar2}')`;
     } else {
+      const hq720 = `https://i.ytimg.com/vi/${this.videoId}/hq720.jpg`;
       const maxres = `https://img.youtube.com/vi/${this.videoId}/maxresdefault.jpg`;
-      const hq = `https://img.youtube.com/vi/${this.videoId}/hqdefault.jpg`;
+      const mq = `https://img.youtube.com/vi/${this.videoId}/mqdefault.jpg`;
 
-      this.thumbOverlayEl.style.backgroundImage = `url('${maxres}')`;
+      // Start with hq720 / maxres (both 16:9 uncropped)
+      this.thumbOverlayEl.style.backgroundImage = `url('${hq720}')`;
 
       const imgCheck = new Image();
       imgCheck.onload = () => {
-        if (imgCheck.naturalWidth <= 120 && this.thumbOverlayEl) {
-          this.thumbOverlayEl.style.backgroundImage = `url('${hq}')`;
+        if (imgCheck.naturalWidth > 120 && this.thumbOverlayEl) {
+          this.thumbOverlayEl.style.backgroundImage = `url('${hq720}')`;
+        } else if (this.thumbOverlayEl) {
+          const maxCheck = new Image();
+          maxCheck.onload = () => {
+            if (maxCheck.naturalWidth > 120 && this.thumbOverlayEl) {
+              this.thumbOverlayEl.style.backgroundImage = `url('${maxres}')`;
+            } else if (this.thumbOverlayEl) {
+              this.thumbOverlayEl.style.backgroundImage = `url('${mq}')`;
+            }
+          };
+          maxCheck.onerror = () => {
+            if (this.thumbOverlayEl) {
+              this.thumbOverlayEl.style.backgroundImage = `url('${mq}')`;
+            }
+          };
+          maxCheck.src = maxres;
         }
       };
-      imgCheck.src = maxres;
+      imgCheck.onerror = () => {
+        if (this.thumbOverlayEl) {
+          this.thumbOverlayEl.style.backgroundImage = `url('${mq}')`;
+        }
+      };
+      imgCheck.src = hq720;
     }
   }
 
   private hideThumbnail(): void {
     if (this.thumbOverlayEl) {
       this.thumbOverlayEl.addClass("is-hidden");
+    }
+    if (this.thumbPlayBtnEl) {
+      this.thumbPlayBtnEl.empty();
+      this.thumbPlayBtnEl.removeClass("is-replay-state");
+      this.thumbPlayBtnEl.addClass("is-play-state");
+      setIcon(this.thumbPlayBtnEl, "play");
+      this.thumbPlayBtnEl.removeAttribute("title");
     }
   }
 
@@ -314,6 +395,10 @@ export class YouTubePlayer extends BasePlayer {
   }
 
   public async play(): Promise<void> {
+    if (this._hasEnded) {
+      this._hasEnded = false;
+      this.seekTo(0);
+    }
     this.hideThumbnail();
     this.sendPostMessage("playVideo");
     this.disableCaptions();
@@ -375,7 +460,8 @@ export class YouTubePlayer extends BasePlayer {
     this.sendPostMessage("previousVideo");
   }
 
-  public playVideoAt(index: number): void {
+  public playVideoAt(index: number, startSeconds: number = 0): void {
+    this.pendingSeekTime = startSeconds > 0 ? startSeconds : null;
     this.sendPostMessage("playVideoAt", [index]);
   }
 

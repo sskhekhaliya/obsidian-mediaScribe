@@ -1,5 +1,5 @@
-import { App, MarkdownView, Menu, Notice, setIcon } from "obsidian";
-import { EmbeddedPosition, IMediaPlayer, MediaScribeSettings, MediaSourceInfo } from "../types";
+import { App, MarkdownView, Menu, Notice, normalizePath, setIcon } from "obsidian";
+import { EmbeddedPosition, IMediaPlayer, MediaScribeSettings, MediaSourceInfo, PlaylistItem, StoredSidePanelState } from "../types";
 import { YouTubePlayer } from "../players/youtubePlayer";
 import { HTML5Player } from "../players/html5Player";
 import { ScreenshotService } from "../services/screenshotService";
@@ -10,7 +10,7 @@ import { AmbientGlowService } from "../services/ambientGlowService";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { TimelineMarkers } from "./TimelineMarkers";
 import { formatSeconds, parseTimestamp } from "../utils/time";
-import { fetchYouTubeTitle, fetchYouTubeVideoMetadata, fetchYouTubePlaylistItems } from "../utils/youtube";
+import { fetchYouTubeTitle, fetchYouTubeVideoMetadata, fetchYouTubePlaylistItems, getCachedYouTubeTitle } from "../utils/youtube";
 
 export class MediaScribeEmbeddedWidget {
   private plugin: any;
@@ -174,8 +174,8 @@ export class MediaScribeEmbeddedWidget {
     return this.currentSource;
   }
 
-  public async loadMedia(source: MediaSourceInfo): Promise<void> {
-    if (this.currentSource && this.currentSource.url === source.url && this.player) {
+  public async loadMedia(source: MediaSourceInfo, autoPlay: boolean = false): Promise<void> {
+    if (this.currentSource && this.currentSource.url === source.url && this.currentSource.videoId === source.videoId && this.player) {
       return;
     }
 
@@ -186,14 +186,32 @@ export class MediaScribeEmbeddedWidget {
       this.player = null;
     }
 
+    if (source.isPlaylist && source.playlistItems && source.videoId) {
+      const idx = source.playlistItems.findIndex((it) => it.videoId === source.videoId);
+      if (idx !== -1) {
+        source.playlistIndex = idx;
+      }
+    }
+
     this.currentSource = source;
-    this.playlistIndex = source.playlistIndex || 0;
+    this.playlistIndex = typeof source.playlistIndex === "number" && source.playlistIndex >= 0 ? source.playlistIndex : 0;
+
+    if (!source.title && source.videoId) {
+      const cachedTitle = getCachedYouTubeTitle(source.videoId);
+      if (cachedTitle) {
+        source.title = cachedTitle;
+      }
+    }
 
     this.updateHeaderInfo();
 
     let startPosition = source.initialTime || 0;
-    if (this.settings.rememberPlaybackPosition && this.settings.storedPlaybackPositions[source.url]) {
-      startPosition = this.settings.storedPlaybackPositions[source.url];
+    if (this.settings.rememberPlaybackPosition) {
+      if (source.videoId && this.settings.storedPlaybackPositions[source.videoId]) {
+        startPosition = this.settings.storedPlaybackPositions[source.videoId];
+      } else if (source.url && this.settings.storedPlaybackPositions[source.url]) {
+        startPosition = this.settings.storedPlaybackPositions[source.url];
+      }
     }
 
     if (!this.playerContainerEl) return;
@@ -206,11 +224,15 @@ export class MediaScribeEmbeddedWidget {
         this.settings.hideNativeYouTubeControls,
         this.settings.hideYouTubeOverlays,
         this.settings.youtubeCropZoom,
-        Boolean(source.isShorts)
+        Boolean(source.isShorts),
+        autoPlay
       );
     } else {
       const isAudio = source.type === "html5_audio";
       this.player = new HTML5Player(source.url, isAudio, startPosition);
+      if (autoPlay) {
+        this.player.play();
+      }
     }
 
     this.typingScribeService.setPlayer(this.player);
@@ -226,6 +248,7 @@ export class MediaScribeEmbeddedWidget {
     this.updatePlaylistUI();
     this.loadTranscript(source);
     this.resolveYouTubeInfo(source);
+    this.restoreSidePanelState(source);
   }
 
   private async resolveYouTubeInfo(source: MediaSourceInfo): Promise<void> {
@@ -241,13 +264,49 @@ export class MediaScribeEmbeddedWidget {
           if (items && items.length > 0 && this.currentSource === source) {
             source.playlistItems = items;
             source.isPlaylist = true;
+
+            // Prioritize matching playlist item by videoId if present
+            if (source.videoId) {
+              const matchedIdx = items.findIndex((it) => it.videoId === source.videoId);
+              if (matchedIdx !== -1) {
+                this.playlistIndex = matchedIdx;
+                source.playlistIndex = matchedIdx;
+              }
+            } else if (typeof source.playlistIndex === "number" && items[source.playlistIndex]?.videoId) {
+              this.playlistIndex = source.playlistIndex;
+              source.videoId = items[this.playlistIndex].videoId;
+              if (this.player && "setVideoId" in this.player) {
+                (this.player as any).setVideoId(source.videoId);
+              }
+            } else if (items[0]?.videoId) {
+              this.playlistIndex = 0;
+              source.videoId = items[0].videoId;
+              if (this.player && "setVideoId" in this.player) {
+                (this.player as any).setVideoId(source.videoId);
+              }
+            }
+
             if (items[this.playlistIndex]?.title) {
               source.title = items[this.playlistIndex].title;
-              this.updateHeaderInfo();
             }
+            this.updateHeaderInfo();
             this.updatePlaylistUI();
           }
         });
+      } else if (source.playlistItems && source.playlistItems.length > 0) {
+        if (source.videoId) {
+          const matchedIdx = source.playlistItems.findIndex((it) => it.videoId === source.videoId);
+          if (matchedIdx !== -1) {
+            this.playlistIndex = matchedIdx;
+            source.playlistIndex = matchedIdx;
+            if (source.playlistItems[matchedIdx]?.title) {
+              source.title = source.playlistItems[matchedIdx].title;
+            }
+            this.updateHeaderInfo();
+            this.updatePlaylistUI();
+          }
+        }
+        this.resolveYouTubeTitles(source);
       } else {
         this.resolveYouTubeTitles(source);
       }
@@ -453,31 +512,7 @@ export class MediaScribeEmbeddedWidget {
         .onClick(() => this.setPosition("vertical_left"));
     });
 
-    menu.addItem((item) => {
-      item.setTitle("Move to Right Sidebar")
-        .setIcon("layout-sidebar-right")
-        .onClick(() => this.switchToSidebar());
-    });
-
     menu.showAtMouseEvent(e);
-  }
-
-  public async switchToSidebar(): Promise<void> {
-    const time = await this.player?.getCurrentTime() || 0;
-    const isPlaying = this.player?.isPlaying || false;
-    const source = this.currentSource;
-    if (source) {
-      source.initialTime = time;
-    }
-    const returnPos = this.settings.embeddedPosition || "top";
-    const notePath = this.markdownView.file?.path;
-
-    this.destroy();
-
-    if (source && this.plugin) {
-      await this.plugin.activateSidebarView(source, time, isPlaying, returnPos, notePath);
-      new Notice("MediaScribe: Moved player to sidebar.");
-    }
   }
 
   private buildControls(parentEl: HTMLElement): void {
@@ -744,7 +779,7 @@ export class MediaScribeEmbeddedWidget {
     this.renderDescriptionView();
   }
 
-  public openSideTab(tab: "playlist" | "transcript" | "description"): void {
+  public openSideTab(tab: "playlist" | "transcript" | "description", skipSave: boolean = false): void {
     this.activeSideTab = tab;
     this.isSidePanelOpen = true;
     this.sidePanelEl?.removeClass("is-hidden");
@@ -770,9 +805,13 @@ export class MediaScribeEmbeddedWidget {
     } else if (tab === "description") {
       this.renderDescriptionView();
     }
+
+    if (!skipSave) {
+      this.saveSidePanelState();
+    }
   }
 
-  public closeSidePanel(): void {
+  public closeSidePanel(skipSave: boolean = false): void {
     this.isSidePanelOpen = false;
     this.sidePanelEl?.addClass("is-hidden");
     if (this.sidePanelEl) {
@@ -782,6 +821,10 @@ export class MediaScribeEmbeddedWidget {
     this.transcriptBtn?.removeClass("is-active");
     this.descriptionBtn?.removeClass("is-active");
     this.descriptionCtrlBtn?.removeClass("is-active");
+
+    if (!skipSave) {
+      this.saveSidePanelState();
+    }
   }
 
   public toggleSideTab(tab: "playlist" | "transcript" | "description"): void {
@@ -789,6 +832,59 @@ export class MediaScribeEmbeddedWidget {
       this.closeSidePanel();
     } else {
       this.openSideTab(tab);
+    }
+  }
+
+  private async saveSidePanelState(): Promise<void> {
+    if (!this.settings.rememberSidePanelState || !this.currentSource) return;
+    if (!this.settings.storedSidePanelStates) {
+      this.settings.storedSidePanelStates = {};
+    }
+
+    const state: StoredSidePanelState = {
+      isOpen: this.isSidePanelOpen,
+      activeTab: this.activeSideTab,
+      lastAccessed: Date.now()
+    };
+
+    if (this.currentSource.url) {
+      this.settings.storedSidePanelStates[this.currentSource.url] = state;
+    }
+    if (this.currentSource.videoId) {
+      this.settings.storedSidePanelStates[this.currentSource.videoId] = state;
+    }
+    if (this.currentSource.playlistId) {
+      this.settings.storedSidePanelStates[`playlist:${this.currentSource.playlistId}`] = state;
+    }
+
+    await this.onSettingsChange(this.settings);
+  }
+
+  private restoreSidePanelState(source: MediaSourceInfo): void {
+    if (!this.settings.rememberSidePanelState || !this.settings.storedSidePanelStates) {
+      this.closeSidePanel(true);
+      return;
+    }
+
+    const saved =
+      (source.videoId && this.settings.storedSidePanelStates[source.videoId]) ||
+      (source.url && this.settings.storedSidePanelStates[source.url]) ||
+      (source.playlistId && this.settings.storedSidePanelStates[`playlist:${source.playlistId}`]);
+
+    if (saved && saved.isOpen) {
+      saved.lastAccessed = Date.now();
+      let targetTab = saved.activeTab || "playlist";
+      if (targetTab === "playlist" && !source.isPlaylist && !source.playlistId) {
+        targetTab = "transcript";
+      }
+      this.openSideTab(targetTab, true);
+    } else if (this.isSidePanelOpen) {
+      this.openSideTab(this.activeSideTab, true);
+    } else {
+      if (saved) {
+        saved.lastAccessed = Date.now();
+      }
+      this.closeSidePanel(true);
     }
   }
 
@@ -1017,13 +1113,123 @@ export class MediaScribeEmbeddedWidget {
           dur.setText(item.duration);
         }
 
+        row.setAttribute("title", `${item.title}\n(Right-click for options)`);
+
         row.addEventListener("click", () => {
           this.switchPlaylistItem(idx);
         });
+
+        row.addEventListener("contextmenu", (e: MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+
+          const menu = new Menu();
+
+          menu.addItem((menuItem) => {
+            menuItem
+              .setTitle("Create Note for Video")
+              .setIcon("file-plus")
+              .onClick(() => {
+                this.createNoteForPlaylistItem(item);
+              });
+          });
+
+          menu.addItem((menuItem) => {
+            menuItem
+              .setTitle("Play Video")
+              .setIcon("play")
+              .onClick(() => {
+                this.switchPlaylistItem(idx);
+              });
+          });
+
+          menu.addItem((menuItem) => {
+            menuItem
+              .setTitle("Copy Video URL")
+              .setIcon("copy")
+              .onClick(async () => {
+                await navigator.clipboard.writeText(item.source.url);
+                new Notice("MediaScribe: Video URL copied to clipboard.");
+              });
+          });
+
+          menu.showAtMouseEvent(e);
+        });
+      });
+
+      window.requestAnimationFrame(() => {
+        const activeRow = listEl.querySelector(".mediascribe-playlist-row.is-active") as HTMLElement;
+        if (activeRow) {
+          const itemRect = activeRow.getBoundingClientRect();
+          const containerRect = listEl.getBoundingClientRect();
+          if (itemRect.bottom > containerRect.bottom - 70) {
+            const diff = itemRect.bottom - (containerRect.bottom - 70);
+            listEl.scrollBy({ top: diff, behavior: "smooth" });
+          } else if (itemRect.top < containerRect.top + 30) {
+            const diff = itemRect.top - (containerRect.top + 30);
+            listEl.scrollBy({ top: diff, behavior: "smooth" });
+          }
+        }
       });
     } else if (this.currentSource?.type === "youtube" && this.currentSource.playlistId) {
       const info = listEl.createDiv({ cls: "mediascribe-playlist-info" });
       info.setText("YouTube Playlist Active. Use Previous (⏮️) and Next (⏭️) buttons to navigate between videos.");
+    }
+  }
+
+  private sanitizeFileName(name: string): string {
+    return name
+      .replace(/[*"\\/<>:|?#^[\]]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  private async createNoteForPlaylistItem(item: PlaylistItem): Promise<void> {
+    try {
+      // 1. Determine target directory
+      let targetFolder = "";
+      if (this.settings.playlistNoteFolderLocation === "specific_folder" && this.settings.playlistNoteSpecificFolder?.trim()) {
+        targetFolder = normalizePath(this.settings.playlistNoteSpecificFolder.trim());
+      } else {
+        targetFolder = this.markdownView.file?.parent?.path || "";
+      }
+
+      if (targetFolder && targetFolder !== "/" && targetFolder !== ".") {
+        const folderExists = this.app.vault.getAbstractFileByPath(targetFolder);
+        if (!folderExists) {
+          await this.app.vault.createFolder(targetFolder);
+        }
+      } else {
+        targetFolder = "";
+      }
+
+      // 2. Generate clean filename
+      const cleanTitle = this.sanitizeFileName(item.title) || (item.source.videoId ? `Video ${item.source.videoId}` : "Playlist Video");
+      let filePath = targetFolder ? `${targetFolder}/${cleanTitle}.md` : `${cleanTitle}.md`;
+      filePath = normalizePath(filePath);
+
+      let counter = 1;
+      while (this.app.vault.getAbstractFileByPath(filePath)) {
+        filePath = targetFolder
+          ? normalizePath(`${targetFolder}/${cleanTitle} (${counter}).md`)
+          : normalizePath(`${cleanTitle} (${counter}).md`);
+        counter++;
+      }
+
+      // 3. Format frontmatter
+      const propertyKey = this.settings.playlistNoteProperty?.trim() || "video_link";
+      const fileContent = `---\n${propertyKey}: "${item.source.url}"\n---\n`;
+
+      // 4. Create the file
+      const newFile = await this.app.vault.create(filePath, fileContent);
+      new Notice(`MediaScribe: Created note "${newFile.basename}"`);
+
+      // 5. Open the newly created note in a workspace leaf
+      const leaf = this.app.workspace.getLeaf(false);
+      await leaf.openFile(newFile);
+    } catch (err: any) {
+      console.error("[MediaScribe] Failed to create note for playlist item:", err);
+      new Notice(`MediaScribe: Failed to create note: ${err?.message || err}`);
     }
   }
 
@@ -1035,56 +1241,75 @@ export class MediaScribeEmbeddedWidget {
     this.updateSidePanelTabs();
   }
 
-  private switchPlaylistItem(idx: number): void {
+  private async switchPlaylistItem(idx: number): Promise<void> {
     if (!this.currentSource?.playlistItems || !this.currentSource.playlistItems[idx]) return;
 
-    this.playlistIndex = idx;
-    const selectedItem = this.currentSource.playlistItems[idx];
+    // 1. Save current video position before navigating away
+    await this.saveCurrentPosition();
 
-    // If active player is YouTubePlayer with playlist support
-    if (this.currentSource.type === "youtube" && this.player && "playVideoAt" in this.player) {
-      (this.player as any).playVideoAt(idx);
-      if (selectedItem.title) {
-        this.currentSource.title = selectedItem.title;
-        this.updateHeaderInfo();
+    const selectedItem = this.currentSource.playlistItems[idx];
+    if (!selectedItem) return;
+
+    const targetVideoId = selectedItem.videoId || selectedItem.source?.videoId;
+    const targetUrl = selectedItem.source?.url;
+
+    // 2. Look up saved position for target video
+    let resumeTime = 0;
+    if (this.settings.rememberPlaybackPosition) {
+      if (targetVideoId && typeof this.settings.storedPlaybackPositions?.[targetVideoId] === "number") {
+        resumeTime = this.settings.storedPlaybackPositions[targetVideoId];
+      } else if (targetUrl && typeof this.settings.storedPlaybackPositions?.[targetUrl] === "number") {
+        resumeTime = this.settings.storedPlaybackPositions[targetUrl];
       }
-      if (selectedItem.source?.videoId) {
-        this.currentSource.videoId = selectedItem.source.videoId;
-        this.fetchAndSetDescription(selectedItem.source.videoId);
-        this.loadTranscript(selectedItem.source);
-      }
-      this.renderPlaylistItems();
-      this.updateSidePanelTabs();
-      return;
     }
 
-    const newSource = {
-      ...selectedItem.source,
+    // 3. Construct new source with target saved position
+    const newSource: MediaSourceInfo = {
+      ...(selectedItem.source || {}),
+      type: "youtube",
+      url: targetUrl || (targetVideoId ? `https://www.youtube.com/watch?v=${targetVideoId}` : this.currentSource.url),
+      originalInput: targetUrl || this.currentSource.originalInput,
+      videoId: targetVideoId,
+      title: selectedItem.title || selectedItem.source?.title,
+      initialTime: resumeTime,
       isPlaylist: true,
       playlistIndex: idx,
-      playlistItems: this.currentSource.playlistItems
+      playlistItems: this.currentSource.playlistItems,
+      playlistId: this.currentSource.playlistId,
+      isLocal: false
     };
 
-    this.loadMedia(newSource);
+    // 4. Reload player cleanly starting at the saved position (identical to closing and reopening note)
+    await this.loadMedia(newSource, true);
   }
 
-  private handleNextVideo(): void {
-    if (this.currentSource?.playlistItems) {
-      if (this.playlistIndex < this.currentSource.playlistItems.length - 1) {
-        this.switchPlaylistItem(this.playlistIndex + 1);
+  private async handleNextVideo(): Promise<void> {
+    if (!this.currentSource) return;
+    if (!this.currentSource.playlistItems && this.currentSource.playlistId) {
+      const items = await fetchYouTubePlaylistItems(this.currentSource.playlistId);
+      if (items && items.length > 0) {
+        this.currentSource.playlistItems = items;
       }
-    } else if (this.player && this.player.nextVideo) {
-      this.player.nextVideo();
+    }
+    if (this.currentSource.playlistItems && this.currentSource.playlistItems.length > 0) {
+      if (this.playlistIndex < this.currentSource.playlistItems.length - 1) {
+        await this.switchPlaylistItem(this.playlistIndex + 1);
+      }
     }
   }
 
-  private handlePreviousVideo(): void {
-    if (this.currentSource?.playlistItems) {
-      if (this.playlistIndex > 0) {
-        this.switchPlaylistItem(this.playlistIndex - 1);
+  private async handlePreviousVideo(): Promise<void> {
+    if (!this.currentSource) return;
+    if (!this.currentSource.playlistItems && this.currentSource.playlistId) {
+      const items = await fetchYouTubePlaylistItems(this.currentSource.playlistId);
+      if (items && items.length > 0) {
+        this.currentSource.playlistItems = items;
       }
-    } else if (this.player && this.player.previousVideo) {
-      this.player.previousVideo();
+    }
+    if (this.currentSource.playlistItems && this.currentSource.playlistItems.length > 0) {
+      if (this.playlistIndex > 0) {
+        await this.switchPlaylistItem(this.playlistIndex - 1);
+      }
     }
   }
 
@@ -1206,6 +1431,7 @@ export class MediaScribeEmbeddedWidget {
 
 
     this.player.on("playlistindexchange", (idx: number) => {
+      if (idx < 0) return;
       if (this.playlistIndex !== idx) {
         this.playlistIndex = idx;
         if (this.currentSource) {
@@ -1287,8 +1513,39 @@ export class MediaScribeEmbeddedWidget {
   }
 
   private async saveCurrentPosition(): Promise<void> {
-    if (!this.settings.rememberPlaybackPosition || !this.currentSource || this.currentTime <= 0) return;
-    this.settings.storedPlaybackPositions[this.currentSource.url] = Math.floor(this.currentTime);
+    if (!this.settings.rememberPlaybackPosition || !this.currentSource) return;
+
+    if (this.player) {
+      try {
+        const pTime = await this.player.getCurrentTime();
+        if (typeof pTime === "number" && pTime > 0) {
+          this.currentTime = pTime;
+        }
+      } catch {}
+    }
+
+    if (this.currentTime <= 0) return;
+    const time = Math.floor(this.currentTime);
+
+    if (!this.settings.storedPlaybackPositions) {
+      this.settings.storedPlaybackPositions = {};
+    }
+    if (this.currentSource.url) {
+      this.settings.storedPlaybackPositions[this.currentSource.url] = time;
+    }
+    if (this.currentSource.videoId) {
+      this.settings.storedPlaybackPositions[this.currentSource.videoId] = time;
+    }
+    if (!this.settings.storedPlaybackLastAccessed) {
+      this.settings.storedPlaybackLastAccessed = {};
+    }
+    const now = Date.now();
+    if (this.currentSource.url) {
+      this.settings.storedPlaybackLastAccessed[this.currentSource.url] = now;
+    }
+    if (this.currentSource.videoId) {
+      this.settings.storedPlaybackLastAccessed[this.currentSource.videoId] = now;
+    }
     await this.onSettingsChange(this.settings);
   }
 

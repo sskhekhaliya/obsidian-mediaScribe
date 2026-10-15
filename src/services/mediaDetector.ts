@@ -77,15 +77,23 @@ export class MediaDetector {
         if (parsed !== null) initialTime = parsed;
       }
 
+      // Extract playlist index if present: index=3 (1-based -> 0-based)
+      let playlistIndex: number | undefined;
+      const indexMatch = input.match(/[?&]index=(\d+)/i);
+      if (indexMatch && indexMatch[1]) {
+        playlistIndex = Math.max(0, parseInt(indexMatch[1], 10) - 1);
+      }
+
       const isShorts = /\/shorts\//i.test(input);
       return {
         type: "youtube",
         url: playlistId 
-          ? `https://www.youtube.com/watch?v=${videoId}&list=${playlistId}`
+          ? `https://www.youtube.com/watch?v=${videoId}&list=${playlistId}${typeof playlistIndex === "number" ? `&index=${playlistIndex + 1}` : ""}`
           : (isShorts ? `https://www.youtube.com/shorts/${videoId}` : `https://www.youtube.com/watch?v=${videoId}`),
         originalInput: input,
         videoId,
         playlistId,
+        playlistIndex,
         isPlaylist: Boolean(playlistId),
         isShorts,
         initialTime,
@@ -93,11 +101,18 @@ export class MediaDetector {
       };
     } else if (playlistId) {
       // Pure playlist URL without single video id
+      let playlistIndex: number | undefined;
+      const indexMatch = input.match(/[?&]index=(\d+)/i);
+      if (indexMatch && indexMatch[1]) {
+        playlistIndex = Math.max(0, parseInt(indexMatch[1], 10) - 1);
+      }
+
       return {
         type: "youtube",
-        url: `https://www.youtube.com/playlist?list=${playlistId}`,
+        url: `https://www.youtube.com/playlist?list=${playlistId}${typeof playlistIndex === "number" ? `&index=${playlistIndex + 1}` : ""}`,
         originalInput: input,
         playlistId,
+        playlistIndex,
         isPlaylist: true,
         isLocal: false
       };
@@ -195,13 +210,17 @@ export class MediaDetector {
   /**
    * Scans a note's frontmatter and body to find media links or playlists
    */
-  public extractMediaFromNote(file: TFile, mediaPropertyNames: string[]): MediaSourceInfo | null {
+  public extractMediaFromNote(file: TFile, mediaPropertyNames: string[], additionalProperty?: string): MediaSourceInfo | null {
     const cache = this.app.metadataCache.getFileCache(file);
     if (!cache) return null;
 
+    const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty)
+      ? [additionalProperty, ...mediaPropertyNames]
+      : mediaPropertyNames;
+
     // 1. Check frontmatter
     if (cache.frontmatter) {
-      for (const prop of mediaPropertyNames) {
+      for (const prop of propList) {
         const val = cache.frontmatter[prop];
         if (!val) continue;
 

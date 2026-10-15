@@ -41,7 +41,8 @@ export interface NoteTimestampMarker {
 }
 
 export type TimestampFormat = 
-  | "bracket"      // [01:23]
+  | "bracket"       // [01:23]
+  | "full_url_link" // [01:23](https://youtu.be/...#t=83)
   | "markdown_link" // [01:23](#t=83)
   | "wikilink"      // [[#t=83|01:23]]
   | "bold"          // **01:23**
@@ -49,7 +50,7 @@ export type TimestampFormat =
 
 export type PlayerLayoutMode = "embed_in_note" | "right_sidebar" | "split_horizontal" | "split_vertical";
 export type EmbeddedPosition = "top" | "vertical_right" | "vertical_left";
-export type PlayerPosition = "top" | "vertical_right" | "vertical_left" | "sidebar";
+export type PlayerPosition = EmbeddedPosition;
 
 export interface MediaScribeSettings {
   autoEmbedInNote: boolean;
@@ -64,6 +65,7 @@ export interface MediaScribeSettings {
   timestampFormat: TimestampFormat;
   includeTimestampLeadingZero: boolean;
   autoPauseOnTyping: boolean;
+  autoPauseCharThreshold: number;
   autoPauseIdleResumeSec: number;
   autoResumeRewindSec: number;
   screenshotFolder: string;
@@ -74,8 +76,21 @@ export interface MediaScribeSettings {
   defaultPlaybackRate: number;
   rememberPlaybackPosition: boolean;
   storedPlaybackPositions: Record<string, number>;
+  storedPlaybackLastAccessed?: Record<string, number>;
+  rememberSidePanelState: boolean;
+  storedSidePanelStates: Record<string, StoredSidePanelState>;
+  autoClearHistoryDays: number;
   mediaPropertyNames: string[]; // e.g. ["media_link", "media", "video", "url"]
   enableAmbientMode: boolean;
+  playlistNoteProperty: string;
+  playlistNoteFolderLocation: "current_folder" | "specific_folder";
+  playlistNoteSpecificFolder: string;
+}
+
+export interface StoredSidePanelState {
+  isOpen: boolean;
+  activeTab: "playlist" | "transcript" | "description";
+  lastAccessed?: number;
 }
 
 export const DEFAULT_SETTINGS: MediaScribeSettings = {
@@ -91,6 +106,7 @@ export const DEFAULT_SETTINGS: MediaScribeSettings = {
   timestampFormat: "bracket",
   includeTimestampLeadingZero: true,
   autoPauseOnTyping: false,
+  autoPauseCharThreshold: 3,
   autoPauseIdleResumeSec: 2.0,
   autoResumeRewindSec: 1.5,
   screenshotFolder: "",
@@ -101,8 +117,15 @@ export const DEFAULT_SETTINGS: MediaScribeSettings = {
   defaultPlaybackRate: 1.0,
   rememberPlaybackPosition: true,
   storedPlaybackPositions: {},
-  mediaPropertyNames: ["media_link", "media", "video", "url", "youtube"],
-  enableAmbientMode: true
+  storedPlaybackLastAccessed: {},
+  rememberSidePanelState: true,
+  storedSidePanelStates: {},
+  autoClearHistoryDays: 30,
+  mediaPropertyNames: ["media_link", "video_link", "media", "video", "url", "youtube"],
+  enableAmbientMode: true,
+  playlistNoteProperty: "video_link",
+  playlistNoteFolderLocation: "current_folder",
+  playlistNoteSpecificFolder: ""
 };
 
 export type PlayerEventType = 

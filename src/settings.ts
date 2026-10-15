@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import MediaScribePlugin from "./main";
 import { PlayerLayoutMode, TimestampFormat } from "./types";
 import { FolderSuggest } from "./ui/folderSuggest";
@@ -133,20 +133,6 @@ export class MediaScribeSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
-      .setName("Manual Open Layout")
-      .setDesc("Where the media player opens when explicitly launched via command palette or ribbon.")
-      .addDropdown((drop) => {
-        drop
-          .addOption("right_sidebar", "Right Sidebar")
-          .addOption("split_horizontal", "Split View (Top / Bottom)")
-          .addOption("split_vertical", "Split View (Side by Side)")
-          .setValue(this.plugin.settings.defaultLayout)
-          .onChange(async (val) => {
-            this.plugin.settings.defaultLayout = val as PlayerLayoutMode;
-            await this.plugin.saveSettings();
-          });
-      });
 
     new Setting(containerEl)
       .setName("Jump Step (Seconds)")
@@ -182,8 +168,9 @@ export class MediaScribeSettingTab extends PluginSettingTab {
       .setDesc("Syntax used when inserting timestamps into your notes.")
       .addDropdown((drop) => {
         drop
-          .addOption("bracket", "[01:23] (Clickable Bracket)")
-          .addOption("markdown_link", "[01:23](#t=83) (Markdown Link)")
+          .addOption("full_url_link", "[01:23](https://youtu.be/...?t=83) (Direct Video Link - Portable)")
+          .addOption("markdown_link", "[01:23](#t=83) (Internal Anchor Link)")
+          .addOption("bracket", "[01:23] (Clean Bracket)")
           .addOption("wikilink", "[[#t=83|01:23]] (Obsidian Wikilink)")
           .addOption("bold", "**01:23** (Bold text)")
           .addOption("plain", "01:23 (Plain text)")
@@ -217,6 +204,20 @@ export class MediaScribeSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.autoPauseOnTyping)
           .onChange(async (val) => {
             this.plugin.settings.autoPauseOnTyping = val;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Pause Trigger Threshold (Characters)")
+      .setDesc("How many characters must be typed continuously before playback pauses. Set to 1 for instant pause, or 3–5 to ignore small edits like commas or punctuation.")
+      .addSlider((slider) => {
+        slider
+          .setLimits(1, 10, 1)
+          .setValue(this.plugin.settings.autoPauseCharThreshold ?? 3)
+          .setDynamicTooltip()
+          .onChange(async (val) => {
+            this.plugin.settings.autoPauseCharThreshold = val;
             await this.plugin.saveSettings();
           });
       });
@@ -311,17 +312,95 @@ export class MediaScribeSettingTab extends PluginSettingTab {
           });
       });
 
+    // --- Playlist Notes ---
+    containerEl.createEl("h3", { text: "Playlist Note Creation" });
+
+    new Setting(containerEl)
+      .setName("Video Link Property Name")
+      .setDesc("The frontmatter property name used when generating notes from playlist videos.")
+      .addText((text) => {
+        text
+          .setPlaceholder("video_link")
+          .setValue(this.plugin.settings.playlistNoteProperty)
+          .onChange(async (val) => {
+            this.plugin.settings.playlistNoteProperty = val.trim() || "video_link";
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Save Location for Playlist Notes")
+      .setDesc("Choose whether new playlist notes are created in the current note's folder or a specific folder.")
+      .addDropdown((drop) => {
+        drop
+          .addOption("current_folder", "Same folder as current note")
+          .addOption("specific_folder", "In a specific folder")
+          .setValue(this.plugin.settings.playlistNoteFolderLocation)
+          .onChange(async (val) => {
+            this.plugin.settings.playlistNoteFolderLocation = val as "current_folder" | "specific_folder";
+            await this.plugin.saveSettings();
+            this.display();
+          });
+      });
+
+    if (this.plugin.settings.playlistNoteFolderLocation === "specific_folder") {
+      new Setting(containerEl)
+        .setName("Specific Folder")
+        .setDesc("Choose vault folder where new playlist notes will be stored.")
+        .addText((text) => {
+          new FolderSuggest(this.app, text.inputEl);
+          text
+            .setPlaceholder("e.g. Media/Notes")
+            .setValue(this.plugin.settings.playlistNoteSpecificFolder)
+            .onChange(async (val) => {
+              this.plugin.settings.playlistNoteSpecificFolder = val.trim();
+              await this.plugin.saveSettings();
+            });
+        });
+    }
+
+    // --- Panel & Playback Memory ---
+    new Setting(containerEl)
+      .setName("Remember Side Panel State")
+      .setDesc("Automatically reopen the playlist, captions, or description panel if it was left open for a video or playlist.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.rememberSidePanelState)
+          .onChange(async (val) => {
+            this.plugin.settings.rememberSidePanelState = val;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Auto-Clear Inactive History (Days)")
+      .setDesc("Automatically clears saved panel states and playback positions for videos or playlists that have not been opened after this many days (0 to keep data forever).")
+      .addText((text) => {
+        text
+          .setPlaceholder("30")
+          .setValue(String(this.plugin.settings.autoClearHistoryDays ?? 30))
+          .onChange(async (val) => {
+            const parsed = parseInt(val.trim(), 10);
+            this.plugin.settings.autoClearHistoryDays = isNaN(parsed) || parsed < 0 ? 0 : parsed;
+            await this.plugin.saveSettings();
+            this.plugin.cleanExpiredHistory();
+          });
+      });
+
     // --- Reset Playback History ---
     new Setting(containerEl)
       .setName("Clear Saved Playback History")
-      .setDesc("Clears all remembered positions for watched videos.")
+      .setDesc("Clears all remembered playback positions and saved panel states for watched videos.")
       .addButton((btn) => {
         btn
           .setButtonText("Clear History")
           .setWarning()
           .onClick(async () => {
             this.plugin.settings.storedPlaybackPositions = {};
+            this.plugin.settings.storedPlaybackLastAccessed = {};
+            this.plugin.settings.storedSidePanelStates = {};
             await this.plugin.saveSettings();
+            new Notice("MediaScribe: Playback positions and panel states cleared.");
             this.display();
           });
       });

@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => MediaScribePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian16 = require("obsidian");
+var import_obsidian15 = require("obsidian");
 
 // src/types/index.ts
 var DEFAULT_SETTINGS = {
@@ -39,6 +39,7 @@ var DEFAULT_SETTINGS = {
   timestampFormat: "bracket",
   includeTimestampLeadingZero: true,
   autoPauseOnTyping: false,
+  autoPauseCharThreshold: 3,
   autoPauseIdleResumeSec: 2,
   autoResumeRewindSec: 1.5,
   screenshotFolder: "",
@@ -49,8 +50,15 @@ var DEFAULT_SETTINGS = {
   defaultPlaybackRate: 1,
   rememberPlaybackPosition: true,
   storedPlaybackPositions: {},
-  mediaPropertyNames: ["media_link", "media", "video", "url", "youtube"],
-  enableAmbientMode: true
+  storedPlaybackLastAccessed: {},
+  rememberSidePanelState: true,
+  storedSidePanelStates: {},
+  autoClearHistoryDays: 30,
+  mediaPropertyNames: ["media_link", "video_link", "media", "video", "url", "youtube"],
+  enableAmbientMode: true,
+  playlistNoteProperty: "video_link",
+  playlistNoteFolderLocation: "current_folder",
+  playlistNoteSpecificFolder: ""
 };
 
 // src/settings.ts
@@ -156,12 +164,6 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
         this.plugin.embeddedManager.syncActiveView();
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("Manual Open Layout").setDesc("Where the media player opens when explicitly launched via command palette or ribbon.").addDropdown((drop) => {
-      drop.addOption("right_sidebar", "Right Sidebar").addOption("split_horizontal", "Split View (Top / Bottom)").addOption("split_vertical", "Split View (Side by Side)").setValue(this.plugin.settings.defaultLayout).onChange(async (val) => {
-        this.plugin.settings.defaultLayout = val;
-        await this.plugin.saveSettings();
-      });
-    });
     new import_obsidian2.Setting(containerEl).setName("Jump Step (Seconds)").setDesc("How many seconds to skip forward or backward when using media hotkeys.").addSlider((slider) => {
       slider.setLimits(1, 60, 1).setValue(this.plugin.settings.jumpStepSeconds).setDynamicTooltip().onChange(async (val) => {
         this.plugin.settings.jumpStepSeconds = val;
@@ -176,7 +178,7 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
     });
     containerEl.createEl("h3", { text: "Timestamps" });
     new import_obsidian2.Setting(containerEl).setName("Timestamp Format").setDesc("Syntax used when inserting timestamps into your notes.").addDropdown((drop) => {
-      drop.addOption("bracket", "[01:23] (Clickable Bracket)").addOption("markdown_link", "[01:23](#t=83) (Markdown Link)").addOption("wikilink", "[[#t=83|01:23]] (Obsidian Wikilink)").addOption("bold", "**01:23** (Bold text)").addOption("plain", "01:23 (Plain text)").setValue(this.plugin.settings.timestampFormat).onChange(async (val) => {
+      drop.addOption("full_url_link", "[01:23](https://youtu.be/...?t=83) (Direct Video Link - Portable)").addOption("markdown_link", "[01:23](#t=83) (Internal Anchor Link)").addOption("bracket", "[01:23] (Clean Bracket)").addOption("wikilink", "[[#t=83|01:23]] (Obsidian Wikilink)").addOption("bold", "**01:23** (Bold text)").addOption("plain", "01:23 (Plain text)").setValue(this.plugin.settings.timestampFormat).onChange(async (val) => {
         this.plugin.settings.timestampFormat = val;
         await this.plugin.saveSettings();
       });
@@ -191,6 +193,12 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("Auto-Pause While Typing").setDesc("Automatically pause media playback whenever you start typing in your note.").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.autoPauseOnTyping).onChange(async (val) => {
         this.plugin.settings.autoPauseOnTyping = val;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian2.Setting(containerEl).setName("Pause Trigger Threshold (Characters)").setDesc("How many characters must be typed continuously before playback pauses. Set to 1 for instant pause, or 3\u20135 to ignore small edits like commas or punctuation.").addSlider((slider) => {
+      slider.setLimits(1, 10, 1).setValue(this.plugin.settings.autoPauseCharThreshold ?? 3).setDynamicTooltip().onChange(async (val) => {
+        this.plugin.settings.autoPauseCharThreshold = val;
         await this.plugin.saveSettings();
       });
     });
@@ -233,10 +241,50 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("Clear Saved Playback History").setDesc("Clears all remembered positions for watched videos.").addButton((btn) => {
+    containerEl.createEl("h3", { text: "Playlist Note Creation" });
+    new import_obsidian2.Setting(containerEl).setName("Video Link Property Name").setDesc("The frontmatter property name used when generating notes from playlist videos.").addText((text) => {
+      text.setPlaceholder("video_link").setValue(this.plugin.settings.playlistNoteProperty).onChange(async (val) => {
+        this.plugin.settings.playlistNoteProperty = val.trim() || "video_link";
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian2.Setting(containerEl).setName("Save Location for Playlist Notes").setDesc("Choose whether new playlist notes are created in the current note's folder or a specific folder.").addDropdown((drop) => {
+      drop.addOption("current_folder", "Same folder as current note").addOption("specific_folder", "In a specific folder").setValue(this.plugin.settings.playlistNoteFolderLocation).onChange(async (val) => {
+        this.plugin.settings.playlistNoteFolderLocation = val;
+        await this.plugin.saveSettings();
+        this.display();
+      });
+    });
+    if (this.plugin.settings.playlistNoteFolderLocation === "specific_folder") {
+      new import_obsidian2.Setting(containerEl).setName("Specific Folder").setDesc("Choose vault folder where new playlist notes will be stored.").addText((text) => {
+        new FolderSuggest(this.app, text.inputEl);
+        text.setPlaceholder("e.g. Media/Notes").setValue(this.plugin.settings.playlistNoteSpecificFolder).onChange(async (val) => {
+          this.plugin.settings.playlistNoteSpecificFolder = val.trim();
+          await this.plugin.saveSettings();
+        });
+      });
+    }
+    new import_obsidian2.Setting(containerEl).setName("Remember Side Panel State").setDesc("Automatically reopen the playlist, captions, or description panel if it was left open for a video or playlist.").addToggle((toggle) => {
+      toggle.setValue(this.plugin.settings.rememberSidePanelState).onChange(async (val) => {
+        this.plugin.settings.rememberSidePanelState = val;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian2.Setting(containerEl).setName("Auto-Clear Inactive History (Days)").setDesc("Automatically clears saved panel states and playback positions for videos or playlists that have not been opened after this many days (0 to keep data forever).").addText((text) => {
+      text.setPlaceholder("30").setValue(String(this.plugin.settings.autoClearHistoryDays ?? 30)).onChange(async (val) => {
+        const parsed = parseInt(val.trim(), 10);
+        this.plugin.settings.autoClearHistoryDays = isNaN(parsed) || parsed < 0 ? 0 : parsed;
+        await this.plugin.saveSettings();
+        this.plugin.cleanExpiredHistory();
+      });
+    });
+    new import_obsidian2.Setting(containerEl).setName("Clear Saved Playback History").setDesc("Clears all remembered playback positions and saved panel states for watched videos.").addButton((btn) => {
       btn.setButtonText("Clear History").setWarning().onClick(async () => {
         this.plugin.settings.storedPlaybackPositions = {};
+        this.plugin.settings.storedPlaybackLastAccessed = {};
+        this.plugin.settings.storedSidePanelStates = {};
         await this.plugin.saveSettings();
+        new import_obsidian2.Notice("MediaScribe: Playback positions and panel states cleared.");
         this.display();
       });
     });
@@ -307,6 +355,11 @@ function parseTimestamp(input) {
     }
     const fromLabel = parseTimestamp(wikiMatch[2]);
     if (fromLabel !== null) return fromLabel;
+  }
+  const urlParamMatch = str.match(/[?&#]t=([0-9hms]+)/i);
+  if (urlParamMatch && urlParamMatch[1]) {
+    const fromParam = parseTimestamp(urlParamMatch[1]);
+    if (fromParam !== null) return fromParam;
   }
   if (str.toLowerCase().startsWith("#t=")) {
     str = str.substring(3).trim();
@@ -419,24 +472,36 @@ var MediaDetector = class {
         const parsed = parseTimestamp(tMatch[1]);
         if (parsed !== null) initialTime = parsed;
       }
+      let playlistIndex;
+      const indexMatch = input.match(/[?&]index=(\d+)/i);
+      if (indexMatch && indexMatch[1]) {
+        playlistIndex = Math.max(0, parseInt(indexMatch[1], 10) - 1);
+      }
       const isShorts = /\/shorts\//i.test(input);
       return {
         type: "youtube",
-        url: playlistId ? `https://www.youtube.com/watch?v=${videoId}&list=${playlistId}` : isShorts ? `https://www.youtube.com/shorts/${videoId}` : `https://www.youtube.com/watch?v=${videoId}`,
+        url: playlistId ? `https://www.youtube.com/watch?v=${videoId}&list=${playlistId}${typeof playlistIndex === "number" ? `&index=${playlistIndex + 1}` : ""}` : isShorts ? `https://www.youtube.com/shorts/${videoId}` : `https://www.youtube.com/watch?v=${videoId}`,
         originalInput: input,
         videoId,
         playlistId,
+        playlistIndex,
         isPlaylist: Boolean(playlistId),
         isShorts,
         initialTime,
         isLocal: false
       };
     } else if (playlistId) {
+      let playlistIndex;
+      const indexMatch = input.match(/[?&]index=(\d+)/i);
+      if (indexMatch && indexMatch[1]) {
+        playlistIndex = Math.max(0, parseInt(indexMatch[1], 10) - 1);
+      }
       return {
         type: "youtube",
-        url: `https://www.youtube.com/playlist?list=${playlistId}`,
+        url: `https://www.youtube.com/playlist?list=${playlistId}${typeof playlistIndex === "number" ? `&index=${playlistIndex + 1}` : ""}`,
         originalInput: input,
         playlistId,
+        playlistIndex,
         isPlaylist: true,
         isLocal: false
       };
@@ -518,11 +583,12 @@ var MediaDetector = class {
   /**
    * Scans a note's frontmatter and body to find media links or playlists
    */
-  extractMediaFromNote(file, mediaPropertyNames) {
+  extractMediaFromNote(file, mediaPropertyNames, additionalProperty) {
     const cache = this.app.metadataCache.getFileCache(file);
     if (!cache) return null;
+    const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty) ? [additionalProperty, ...mediaPropertyNames] : mediaPropertyNames;
     if (cache.frontmatter) {
-      for (const prop of mediaPropertyNames) {
+      for (const prop of propList) {
         const val = cache.frontmatter[prop];
         if (!val) continue;
         if (Array.isArray(val) && val.length > 0) {
@@ -726,9 +792,10 @@ ${linkText}
 // src/services/timestampService.ts
 var import_obsidian5 = require("obsidian");
 var TimestampService = class {
-  constructor(_app, settings, playerGetter) {
+  constructor(_app, settings, playerGetter, sourceGetter) {
     this.settings = settings;
     this.playerGetter = playerGetter;
+    this.sourceGetter = sourceGetter;
   }
   updateSettings(settings) {
     this.settings = settings;
@@ -740,6 +807,22 @@ var TimestampService = class {
     const formattedTime = formatSeconds(seconds, !this.settings.includeTimestampLeadingZero);
     const secInt = Math.floor(seconds);
     switch (this.settings.timestampFormat) {
+      case "full_url_link": {
+        const source = this.sourceGetter ? this.sourceGetter() : null;
+        if (source) {
+          if (source.type === "youtube" && source.videoId) {
+            return `[${formattedTime}](https://youtu.be/${source.videoId}?t=${secInt})`;
+          }
+          if (source.isLocal && source.localFile) {
+            return `[${formattedTime}](${encodeURI(source.localFile.name)}#t=${secInt})`;
+          }
+          if (source.url && (source.url.startsWith("http://") || source.url.startsWith("https://"))) {
+            const separator = source.url.includes("?") ? "&" : "?";
+            return `[${formattedTime}](${source.url}${separator}t=${secInt})`;
+          }
+        }
+        return `[${formattedTime}](#t=${secInt})`;
+      }
       case "markdown_link":
         return `[${formattedTime}](#t=${secInt})`;
       case "wikilink":
@@ -750,7 +833,7 @@ var TimestampService = class {
         return formattedTime;
       case "bracket":
       default:
-        return `[${formattedTime}](#t=${secInt})`;
+        return `[${formattedTime}]`;
     }
   }
   /**
@@ -801,6 +884,8 @@ var TypingScribeService = class {
     this.isEnabled = false;
     this.wasPlayingBeforeTyping = false;
     this.resumeTimeout = null;
+    this.pendingKeystrokes = 0;
+    this.charResetTimeout = null;
     this.settings = settings;
     this.isEnabled = settings.autoPauseOnTyping;
   }
@@ -827,32 +912,59 @@ var TypingScribeService = class {
     if (!this.isEnabled || !this.player || !this.player.isReady) {
       return;
     }
-    if (this.player.isPlaying) {
+    const threshold = Math.max(1, this.settings.autoPauseCharThreshold ?? 3);
+    if (this.wasPlayingBeforeTyping) {
+      this.scheduleResume();
+      return;
+    }
+    if (!this.player.isPlaying) {
+      return;
+    }
+    this.pendingKeystrokes++;
+    if (this.charResetTimeout !== null) {
+      window.clearTimeout(this.charResetTimeout);
+      this.charResetTimeout = null;
+    }
+    if (this.pendingKeystrokes >= threshold) {
       this.wasPlayingBeforeTyping = true;
       this.player.pause();
+      this.pendingKeystrokes = 0;
+      this.scheduleResume();
+    } else {
+      this.charResetTimeout = window.setTimeout(() => {
+        this.pendingKeystrokes = 0;
+        this.charResetTimeout = null;
+      }, 1500);
     }
+  }
+  scheduleResume() {
     if (this.resumeTimeout !== null) {
       window.clearTimeout(this.resumeTimeout);
       this.resumeTimeout = null;
     }
-    if (this.wasPlayingBeforeTyping) {
-      const idleMs = Math.max(500, this.settings.autoPauseIdleResumeSec * 1e3);
-      this.resumeTimeout = window.setTimeout(async () => {
-        if (!this.player || !this.isEnabled) return;
+    const idleMs = Math.max(500, this.settings.autoPauseIdleResumeSec * 1e3);
+    this.resumeTimeout = window.setTimeout(async () => {
+      if (!this.player || !this.isEnabled) return;
+      if (this.wasPlayingBeforeTyping) {
         if (this.settings.autoResumeRewindSec > 0) {
           const currentTime = await this.player.getCurrentTime();
           this.player.seekTo(Math.max(0, currentTime - this.settings.autoResumeRewindSec));
         }
         await this.player.play();
         this.wasPlayingBeforeTyping = false;
-        this.resumeTimeout = null;
-      }, idleMs);
-    }
+      }
+      this.pendingKeystrokes = 0;
+      this.resumeTimeout = null;
+    }, idleMs);
   }
   destroy() {
     if (this.resumeTimeout !== null) {
       window.clearTimeout(this.resumeTimeout);
       this.resumeTimeout = null;
+    }
+    if (this.charResetTimeout !== null) {
+      window.clearTimeout(this.charResetTimeout);
+      this.charResetTimeout = null;
     }
   }
 };
@@ -869,6 +981,9 @@ function cacheYouTubeTitle(videoId, title) {
   if (videoId && title) {
     titleCache.set(videoId, title);
   }
+}
+function getCachedYouTubeTitle(videoId) {
+  return titleCache.get(videoId) || null;
 }
 async function fetchYouTubeTitle(videoId) {
   if (!videoId) return null;
@@ -979,16 +1094,18 @@ async function fetchYouTubePlaylistItems(playlistId) {
                 seenIds.add(v.videoId);
                 const title = v.title?.runs?.[0]?.text || v.title?.simpleText || "Unknown Video";
                 titleCache.set(v.videoId, title);
+                const itemIdx = seenIds.size - 1;
                 items.push({
                   title,
                   duration: v.lengthText?.simpleText || "",
                   videoId: v.videoId,
                   source: {
                     type: "youtube",
-                    url: `https://www.youtube.com/watch?v=${v.videoId}&list=${playlistId}`,
-                    originalInput: `https://www.youtube.com/watch?v=${v.videoId}&list=${playlistId}`,
+                    url: `https://www.youtube.com/watch?v=${v.videoId}&list=${playlistId}&index=${itemIdx + 1}`,
+                    originalInput: `https://www.youtube.com/watch?v=${v.videoId}&list=${playlistId}&index=${itemIdx + 1}`,
                     videoId: v.videoId,
                     playlistId,
+                    playlistIndex: itemIdx,
                     isPlaylist: true,
                     isLocal: false,
                     title
@@ -1002,16 +1119,18 @@ async function fetchYouTubePlaylistItems(playlistId) {
                 seenIds.add(vId);
                 const title = v.metadata?.lockupMetadataViewModel?.title?.content || v.rendererContext?.accessibilityContext?.label?.split(/\s+\d+\s+(?:minutes?|seconds?|hours?)/)[0] || "Unknown Video";
                 titleCache.set(vId, title);
+                const itemIdx = seenIds.size - 1;
                 items.push({
                   title,
                   duration: "",
                   videoId: vId,
                   source: {
                     type: "youtube",
-                    url: `https://www.youtube.com/watch?v=${vId}&list=${playlistId}`,
-                    originalInput: `https://www.youtube.com/watch?v=${vId}&list=${playlistId}`,
+                    url: `https://www.youtube.com/watch?v=${vId}&list=${playlistId}&index=${itemIdx + 1}`,
+                    originalInput: `https://www.youtube.com/watch?v=${vId}&list=${playlistId}&index=${itemIdx + 1}`,
                     videoId: vId,
                     playlistId,
+                    playlistIndex: itemIdx,
                     isPlaylist: true,
                     isLocal: false,
                     title
@@ -1427,7 +1546,7 @@ var BasePlayer = class {
 
 // src/players/youtubePlayer.ts
 var YouTubePlayer = class extends BasePlayer {
-  constructor(videoId, initialTime = 0, playlistId, hideNativeControls = false, hideOverlays = false, _cropZoom = 1, isShorts = false) {
+  constructor(videoId, initialTime = 0, playlistId, hideNativeControls = false, hideOverlays = false, _cropZoom = 1, isShorts = false, autoPlay = false) {
     super();
     this.iframeEl = null;
     this.thumbOverlayEl = null;
@@ -1437,16 +1556,22 @@ var YouTubePlayer = class extends BasePlayer {
     this.duration = 0;
     this.playbackRate = 1;
     this.volume = 100;
+    this.autoPlay = false;
     this.playerSizeEl = null;
     this.croppingDivEl = null;
     this.clickShieldEl = null;
+    this.thumbPlayBtnEl = null;
+    this._hasEnded = false;
+    this.pendingSeekTime = null;
     this.videoId = videoId;
     this.initialTime = initialTime;
     this.playlistId = playlistId;
     this.hideNativeControls = hideNativeControls;
     this.hideOverlays = hideOverlays;
     this.isShorts = isShorts;
+    this.autoPlay = autoPlay;
     this.currentTime = initialTime;
+    this.pendingSeekTime = initialTime > 0 ? initialTime : null;
   }
   mount(container) {
     this.containerEl = container;
@@ -1464,14 +1589,11 @@ var YouTubePlayer = class extends BasePlayer {
     const wrapper = divToCrop.createDiv({ cls: "mediascribe-player-wrapper mediascribe-youtube-wrapper" });
     const controlsVal = this.hideNativeControls || this.hideOverlays || this.isShorts ? 0 : 1;
     const fsVal = 1;
-    const params = `enablejsapi=1&controls=${controlsVal}&rel=0&playsinline=1&modestbranding=1&iv_load_policy=3&cc_load_policy=3&cc_lang_pref=off&fs=${fsVal}&autoplay=0`;
+    const autoPlayVal = this.autoPlay ? 1 : 0;
+    const params = `enablejsapi=1&controls=${controlsVal}&rel=0&playsinline=1&modestbranding=1&iv_load_policy=3&cc_load_policy=3&cc_lang_pref=off&fs=${fsVal}&autoplay=${autoPlayVal}`;
     let src = "";
-    if (this.playlistId) {
-      if (this.videoId) {
-        src = `https://www.youtube.com/embed/${this.videoId}?list=${this.playlistId}&${params}&start=${Math.floor(this.initialTime)}`;
-      } else {
-        src = `https://www.youtube.com/embed/videoseries?list=${this.playlistId}&${params}`;
-      }
+    if (this.playlistId && !this.videoId) {
+      src = `https://www.youtube.com/embed/videoseries?list=${this.playlistId}&${params}`;
     } else {
       src = `https://www.youtube.com/embed/${this.videoId}?${params}&start=${Math.floor(this.initialTime)}`;
     }
@@ -1493,7 +1615,7 @@ var YouTubePlayer = class extends BasePlayer {
     } else if (this.hideOverlays) {
       playerSize.addClass("mediascribe-clean-crop-active");
     }
-    if (this.videoId && (this.hideOverlays || this.isShorts)) {
+    if (!this.autoPlay && (this.hideOverlays || this.isShorts)) {
       this.createThumbnailOverlay(croppingDiv);
     }
     this.setupMessageListener();
@@ -1566,12 +1688,19 @@ var YouTubePlayer = class extends BasePlayer {
           this.disableCaptions();
           this.hideThumbnail();
           this._isPlaying = true;
+          if (this.pendingSeekTime !== null && this.pendingSeekTime > 0) {
+            const seek = this.pendingSeekTime;
+            this.pendingSeekTime = null;
+            this.seekTo(seek);
+          }
           this.emit("play");
         } else if (state === 2) {
           this._isPlaying = false;
           this.emit("pause");
         } else if (state === 0) {
           this._isPlaying = false;
+          this.pendingSeekTime = null;
+          this.showEndedOverlay();
           this.emit("ended");
         }
       }
@@ -1590,6 +1719,11 @@ var YouTubePlayer = class extends BasePlayer {
       if (data.event === "infoDelivery" && data.info) {
         const info = data.info;
         if (typeof info.currentTime === "number") {
+          if (this.pendingSeekTime !== null && this.pendingSeekTime > 0 && Math.abs(info.currentTime - this.pendingSeekTime) > 2) {
+            const seek = this.pendingSeekTime;
+            this.pendingSeekTime = null;
+            this.seekTo(seek);
+          }
           this.currentTime = info.currentTime;
           this.emit("timeupdate", this.currentTime);
           if (this.duration <= 0) {
@@ -1603,23 +1737,56 @@ var YouTubePlayer = class extends BasePlayer {
         if (typeof info.volume === "number") {
           this.volume = info.volume;
         }
-        if (typeof info.playlistIndex === "number") {
+        if (typeof info.playlistIndex === "number" && info.playlistIndex >= 0 && Boolean(this.playlistId && !this.videoId)) {
           this.emit("playlistindexchange", info.playlistIndex);
+        }
+        if (info.videoData && info.videoData.video_id) {
+          this.setVideoId(info.videoData.video_id);
         }
       }
     };
     window.addEventListener("message", this.messageListener);
   }
+  setVideoId(videoId) {
+    if (!videoId || this.videoId === videoId) return;
+    this.videoId = videoId;
+    if (!this._isPlaying) {
+      if (this.thumbOverlayEl) {
+        this.thumbOverlayEl.removeClass("is-hidden");
+        this.updateThumbnailImage();
+      } else if (this.croppingDivEl) {
+        this.createThumbnailOverlay(this.croppingDivEl);
+      }
+    }
+  }
   createThumbnailOverlay(container) {
-    if (!this.videoId || this.thumbOverlayEl) return;
+    if (this.thumbOverlayEl) return;
     this.thumbOverlayEl = container.createDiv({ cls: "mediascribe-thumb-overlay" });
-    this.updateThumbnailImage();
-    const playBtn = this.thumbOverlayEl.createDiv({ cls: "mediascribe-thumb-play-btn" });
-    (0, import_obsidian9.setIcon)(playBtn, "play");
+    if (this.videoId) {
+      this.updateThumbnailImage();
+    }
+    this.thumbPlayBtnEl = this.thumbOverlayEl.createDiv({ cls: "mediascribe-thumb-play-btn is-play-state" });
+    (0, import_obsidian9.setIcon)(this.thumbPlayBtnEl, "play");
     this.thumbOverlayEl.addEventListener("click", () => {
-      this.hideThumbnail();
       this.play();
     });
+  }
+  showEndedOverlay() {
+    this._hasEnded = true;
+    if (!this.thumbOverlayEl && this.croppingDivEl) {
+      this.createThumbnailOverlay(this.croppingDivEl);
+    }
+    if (this.thumbOverlayEl) {
+      this.updateThumbnailImage();
+      if (this.thumbPlayBtnEl) {
+        this.thumbPlayBtnEl.empty();
+        this.thumbPlayBtnEl.removeClass("is-play-state");
+        this.thumbPlayBtnEl.addClass("is-replay-state");
+        (0, import_obsidian9.setIcon)(this.thumbPlayBtnEl, "rotate-ccw");
+        this.thumbPlayBtnEl.setAttribute("title", "Replay");
+      }
+      this.thumbOverlayEl.removeClass("is-hidden");
+    }
   }
   updateThumbnailImage() {
     if (!this.thumbOverlayEl || !this.videoId) return;
@@ -1642,21 +1809,49 @@ var YouTubePlayer = class extends BasePlayer {
       imgCheck.src = oar2;
       this.thumbOverlayEl.style.backgroundImage = `url('${oar2}')`;
     } else {
+      const hq720 = `https://i.ytimg.com/vi/${this.videoId}/hq720.jpg`;
       const maxres = `https://img.youtube.com/vi/${this.videoId}/maxresdefault.jpg`;
-      const hq = `https://img.youtube.com/vi/${this.videoId}/hqdefault.jpg`;
-      this.thumbOverlayEl.style.backgroundImage = `url('${maxres}')`;
+      const mq = `https://img.youtube.com/vi/${this.videoId}/mqdefault.jpg`;
+      this.thumbOverlayEl.style.backgroundImage = `url('${hq720}')`;
       const imgCheck = new Image();
       imgCheck.onload = () => {
-        if (imgCheck.naturalWidth <= 120 && this.thumbOverlayEl) {
-          this.thumbOverlayEl.style.backgroundImage = `url('${hq}')`;
+        if (imgCheck.naturalWidth > 120 && this.thumbOverlayEl) {
+          this.thumbOverlayEl.style.backgroundImage = `url('${hq720}')`;
+        } else if (this.thumbOverlayEl) {
+          const maxCheck = new Image();
+          maxCheck.onload = () => {
+            if (maxCheck.naturalWidth > 120 && this.thumbOverlayEl) {
+              this.thumbOverlayEl.style.backgroundImage = `url('${maxres}')`;
+            } else if (this.thumbOverlayEl) {
+              this.thumbOverlayEl.style.backgroundImage = `url('${mq}')`;
+            }
+          };
+          maxCheck.onerror = () => {
+            if (this.thumbOverlayEl) {
+              this.thumbOverlayEl.style.backgroundImage = `url('${mq}')`;
+            }
+          };
+          maxCheck.src = maxres;
         }
       };
-      imgCheck.src = maxres;
+      imgCheck.onerror = () => {
+        if (this.thumbOverlayEl) {
+          this.thumbOverlayEl.style.backgroundImage = `url('${mq}')`;
+        }
+      };
+      imgCheck.src = hq720;
     }
   }
   hideThumbnail() {
     if (this.thumbOverlayEl) {
       this.thumbOverlayEl.addClass("is-hidden");
+    }
+    if (this.thumbPlayBtnEl) {
+      this.thumbPlayBtnEl.empty();
+      this.thumbPlayBtnEl.removeClass("is-replay-state");
+      this.thumbPlayBtnEl.addClass("is-play-state");
+      (0, import_obsidian9.setIcon)(this.thumbPlayBtnEl, "play");
+      this.thumbPlayBtnEl.removeAttribute("title");
     }
   }
   sendPostMessage(func, args = []) {
@@ -1675,6 +1870,10 @@ var YouTubePlayer = class extends BasePlayer {
     }
   }
   async play() {
+    if (this._hasEnded) {
+      this._hasEnded = false;
+      this.seekTo(0);
+    }
     this.hideThumbnail();
     this.sendPostMessage("playVideo");
     this.disableCaptions();
@@ -1724,7 +1923,8 @@ var YouTubePlayer = class extends BasePlayer {
   previousVideo() {
     this.sendPostMessage("previousVideo");
   }
-  playVideoAt(index) {
+  playVideoAt(index, startSeconds = 0) {
+    this.pendingSeekTime = startSeconds > 0 ? startSeconds : null;
     this.sendPostMessage("playVideoAt", [index]);
   }
   getIFrameElement() {
@@ -2350,7 +2550,18 @@ var TranscriptPanel = class {
     });
     if (this.autoScroll && this.activeIndex >= 0 && rows[this.activeIndex]) {
       const activeEl = rows[this.activeIndex];
-      activeEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      this.scrollItemWithOffset(activeEl, this.listEl, 70, 30);
+    }
+  }
+  scrollItemWithOffset(itemEl, containerEl, bottomOffset = 70, topOffset = 30) {
+    const itemRect = itemEl.getBoundingClientRect();
+    const containerRect = containerEl.getBoundingClientRect();
+    if (itemRect.bottom > containerRect.bottom - bottomOffset) {
+      const diff = itemRect.bottom - (containerRect.bottom - bottomOffset);
+      containerEl.scrollBy({ top: diff, behavior: "smooth" });
+    } else if (itemRect.top < containerRect.top + topOffset) {
+      const diff = itemRect.top - (containerRect.top + topOffset);
+      containerEl.scrollBy({ top: diff, behavior: "smooth" });
     }
   }
   quoteToNote(item) {
@@ -2537,8 +2748,8 @@ var MediaScribeEmbeddedWidget = class {
   getCurrentSource() {
     return this.currentSource;
   }
-  async loadMedia(source) {
-    if (this.currentSource && this.currentSource.url === source.url && this.player) {
+  async loadMedia(source, autoPlay = false) {
+    if (this.currentSource && this.currentSource.url === source.url && this.currentSource.videoId === source.videoId && this.player) {
       return;
     }
     await this.saveCurrentPosition();
@@ -2546,12 +2757,28 @@ var MediaScribeEmbeddedWidget = class {
       this.player.destroy();
       this.player = null;
     }
+    if (source.isPlaylist && source.playlistItems && source.videoId) {
+      const idx = source.playlistItems.findIndex((it) => it.videoId === source.videoId);
+      if (idx !== -1) {
+        source.playlistIndex = idx;
+      }
+    }
     this.currentSource = source;
-    this.playlistIndex = source.playlistIndex || 0;
+    this.playlistIndex = typeof source.playlistIndex === "number" && source.playlistIndex >= 0 ? source.playlistIndex : 0;
+    if (!source.title && source.videoId) {
+      const cachedTitle = getCachedYouTubeTitle(source.videoId);
+      if (cachedTitle) {
+        source.title = cachedTitle;
+      }
+    }
     this.updateHeaderInfo();
     let startPosition = source.initialTime || 0;
-    if (this.settings.rememberPlaybackPosition && this.settings.storedPlaybackPositions[source.url]) {
-      startPosition = this.settings.storedPlaybackPositions[source.url];
+    if (this.settings.rememberPlaybackPosition) {
+      if (source.videoId && this.settings.storedPlaybackPositions[source.videoId]) {
+        startPosition = this.settings.storedPlaybackPositions[source.videoId];
+      } else if (source.url && this.settings.storedPlaybackPositions[source.url]) {
+        startPosition = this.settings.storedPlaybackPositions[source.url];
+      }
     }
     if (!this.playerContainerEl) return;
     if (source.type === "youtube") {
@@ -2562,11 +2789,15 @@ var MediaScribeEmbeddedWidget = class {
         this.settings.hideNativeYouTubeControls,
         this.settings.hideYouTubeOverlays,
         this.settings.youtubeCropZoom,
-        Boolean(source.isShorts)
+        Boolean(source.isShorts),
+        autoPlay
       );
     } else {
       const isAudio = source.type === "html5_audio";
       this.player = new HTML5Player(source.url, isAudio, startPosition);
+      if (autoPlay) {
+        this.player.play();
+      }
     }
     this.typingScribeService.setPlayer(this.player);
     this.player.mount(this.playerContainerEl);
@@ -2580,6 +2811,7 @@ var MediaScribeEmbeddedWidget = class {
     this.updatePlaylistUI();
     this.loadTranscript(source);
     this.resolveYouTubeInfo(source);
+    this.restoreSidePanelState(source);
   }
   async resolveYouTubeInfo(source) {
     if (source.type === "youtube") {
@@ -2591,13 +2823,46 @@ var MediaScribeEmbeddedWidget = class {
           if (items && items.length > 0 && this.currentSource === source) {
             source.playlistItems = items;
             source.isPlaylist = true;
+            if (source.videoId) {
+              const matchedIdx = items.findIndex((it) => it.videoId === source.videoId);
+              if (matchedIdx !== -1) {
+                this.playlistIndex = matchedIdx;
+                source.playlistIndex = matchedIdx;
+              }
+            } else if (typeof source.playlistIndex === "number" && items[source.playlistIndex]?.videoId) {
+              this.playlistIndex = source.playlistIndex;
+              source.videoId = items[this.playlistIndex].videoId;
+              if (this.player && "setVideoId" in this.player) {
+                this.player.setVideoId(source.videoId);
+              }
+            } else if (items[0]?.videoId) {
+              this.playlistIndex = 0;
+              source.videoId = items[0].videoId;
+              if (this.player && "setVideoId" in this.player) {
+                this.player.setVideoId(source.videoId);
+              }
+            }
             if (items[this.playlistIndex]?.title) {
               source.title = items[this.playlistIndex].title;
-              this.updateHeaderInfo();
             }
+            this.updateHeaderInfo();
             this.updatePlaylistUI();
           }
         });
+      } else if (source.playlistItems && source.playlistItems.length > 0) {
+        if (source.videoId) {
+          const matchedIdx = source.playlistItems.findIndex((it) => it.videoId === source.videoId);
+          if (matchedIdx !== -1) {
+            this.playlistIndex = matchedIdx;
+            source.playlistIndex = matchedIdx;
+            if (source.playlistItems[matchedIdx]?.title) {
+              source.title = source.playlistItems[matchedIdx].title;
+            }
+            this.updateHeaderInfo();
+            this.updatePlaylistUI();
+          }
+        }
+        this.resolveYouTubeTitles(source);
       } else {
         this.resolveYouTubeTitles(source);
       }
@@ -2749,25 +3014,7 @@ var MediaScribeEmbeddedWidget = class {
     menu.addItem((item) => {
       item.setTitle("Vertical Split (Left side)").setIcon("panel-left").setChecked(currentPos === "vertical_left").onClick(() => this.setPosition("vertical_left"));
     });
-    menu.addItem((item) => {
-      item.setTitle("Move to Right Sidebar").setIcon("layout-sidebar-right").onClick(() => this.switchToSidebar());
-    });
     menu.showAtMouseEvent(e);
-  }
-  async switchToSidebar() {
-    const time = await this.player?.getCurrentTime() || 0;
-    const isPlaying = this.player?.isPlaying || false;
-    const source = this.currentSource;
-    if (source) {
-      source.initialTime = time;
-    }
-    const returnPos = this.settings.embeddedPosition || "top";
-    const notePath = this.markdownView.file?.path;
-    this.destroy();
-    if (source && this.plugin) {
-      await this.plugin.activateSidebarView(source, time, isPlaying, returnPos, notePath);
-      new import_obsidian13.Notice("MediaScribe: Moved player to sidebar.");
-    }
   }
   buildControls(parentEl) {
     this.controlsEl = parentEl.createDiv({ cls: "mediascribe-controls-card" });
@@ -2980,7 +3227,7 @@ var MediaScribeEmbeddedWidget = class {
     this.descriptionViewEl.style.display = "none";
     this.renderDescriptionView();
   }
-  openSideTab(tab) {
+  openSideTab(tab, skipSave = false) {
     this.activeSideTab = tab;
     this.isSidePanelOpen = true;
     this.sidePanelEl?.removeClass("is-hidden");
@@ -3002,8 +3249,11 @@ var MediaScribeEmbeddedWidget = class {
     } else if (tab === "description") {
       this.renderDescriptionView();
     }
+    if (!skipSave) {
+      this.saveSidePanelState();
+    }
   }
-  closeSidePanel() {
+  closeSidePanel(skipSave = false) {
     this.isSidePanelOpen = false;
     this.sidePanelEl?.addClass("is-hidden");
     if (this.sidePanelEl) {
@@ -3013,12 +3263,58 @@ var MediaScribeEmbeddedWidget = class {
     this.transcriptBtn?.removeClass("is-active");
     this.descriptionBtn?.removeClass("is-active");
     this.descriptionCtrlBtn?.removeClass("is-active");
+    if (!skipSave) {
+      this.saveSidePanelState();
+    }
   }
   toggleSideTab(tab) {
     if (this.isSidePanelOpen && this.activeSideTab === tab) {
       this.closeSidePanel();
     } else {
       this.openSideTab(tab);
+    }
+  }
+  async saveSidePanelState() {
+    if (!this.settings.rememberSidePanelState || !this.currentSource) return;
+    if (!this.settings.storedSidePanelStates) {
+      this.settings.storedSidePanelStates = {};
+    }
+    const state = {
+      isOpen: this.isSidePanelOpen,
+      activeTab: this.activeSideTab,
+      lastAccessed: Date.now()
+    };
+    if (this.currentSource.url) {
+      this.settings.storedSidePanelStates[this.currentSource.url] = state;
+    }
+    if (this.currentSource.videoId) {
+      this.settings.storedSidePanelStates[this.currentSource.videoId] = state;
+    }
+    if (this.currentSource.playlistId) {
+      this.settings.storedSidePanelStates[`playlist:${this.currentSource.playlistId}`] = state;
+    }
+    await this.onSettingsChange(this.settings);
+  }
+  restoreSidePanelState(source) {
+    if (!this.settings.rememberSidePanelState || !this.settings.storedSidePanelStates) {
+      this.closeSidePanel(true);
+      return;
+    }
+    const saved = source.videoId && this.settings.storedSidePanelStates[source.videoId] || source.url && this.settings.storedSidePanelStates[source.url] || source.playlistId && this.settings.storedSidePanelStates[`playlist:${source.playlistId}`];
+    if (saved && saved.isOpen) {
+      saved.lastAccessed = Date.now();
+      let targetTab = saved.activeTab || "playlist";
+      if (targetTab === "playlist" && !source.isPlaylist && !source.playlistId) {
+        targetTab = "transcript";
+      }
+      this.openSideTab(targetTab, true);
+    } else if (this.isSidePanelOpen) {
+      this.openSideTab(this.activeSideTab, true);
+    } else {
+      if (saved) {
+        saved.lastAccessed = Date.now();
+      }
+      this.closeSidePanel(true);
     }
   }
   updateSidePanelTabs() {
@@ -3208,13 +3504,92 @@ var MediaScribeEmbeddedWidget = class {
           const dur = row.createSpan({ cls: "mediascribe-playlist-dur" });
           dur.setText(item.duration);
         }
+        row.setAttribute("title", `${item.title}
+(Right-click for options)`);
         row.addEventListener("click", () => {
           this.switchPlaylistItem(idx);
         });
+        row.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const menu = new import_obsidian13.Menu();
+          menu.addItem((menuItem) => {
+            menuItem.setTitle("Create Note for Video").setIcon("file-plus").onClick(() => {
+              this.createNoteForPlaylistItem(item);
+            });
+          });
+          menu.addItem((menuItem) => {
+            menuItem.setTitle("Play Video").setIcon("play").onClick(() => {
+              this.switchPlaylistItem(idx);
+            });
+          });
+          menu.addItem((menuItem) => {
+            menuItem.setTitle("Copy Video URL").setIcon("copy").onClick(async () => {
+              await navigator.clipboard.writeText(item.source.url);
+              new import_obsidian13.Notice("MediaScribe: Video URL copied to clipboard.");
+            });
+          });
+          menu.showAtMouseEvent(e);
+        });
+      });
+      window.requestAnimationFrame(() => {
+        const activeRow = listEl.querySelector(".mediascribe-playlist-row.is-active");
+        if (activeRow) {
+          const itemRect = activeRow.getBoundingClientRect();
+          const containerRect = listEl.getBoundingClientRect();
+          if (itemRect.bottom > containerRect.bottom - 70) {
+            const diff = itemRect.bottom - (containerRect.bottom - 70);
+            listEl.scrollBy({ top: diff, behavior: "smooth" });
+          } else if (itemRect.top < containerRect.top + 30) {
+            const diff = itemRect.top - (containerRect.top + 30);
+            listEl.scrollBy({ top: diff, behavior: "smooth" });
+          }
+        }
       });
     } else if (this.currentSource?.type === "youtube" && this.currentSource.playlistId) {
       const info = listEl.createDiv({ cls: "mediascribe-playlist-info" });
       info.setText("YouTube Playlist Active. Use Previous (\u23EE\uFE0F) and Next (\u23ED\uFE0F) buttons to navigate between videos.");
+    }
+  }
+  sanitizeFileName(name) {
+    return name.replace(/[*"\\/<>:|?#^[\]]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  async createNoteForPlaylistItem(item) {
+    try {
+      let targetFolder = "";
+      if (this.settings.playlistNoteFolderLocation === "specific_folder" && this.settings.playlistNoteSpecificFolder?.trim()) {
+        targetFolder = (0, import_obsidian13.normalizePath)(this.settings.playlistNoteSpecificFolder.trim());
+      } else {
+        targetFolder = this.markdownView.file?.parent?.path || "";
+      }
+      if (targetFolder && targetFolder !== "/" && targetFolder !== ".") {
+        const folderExists = this.app.vault.getAbstractFileByPath(targetFolder);
+        if (!folderExists) {
+          await this.app.vault.createFolder(targetFolder);
+        }
+      } else {
+        targetFolder = "";
+      }
+      const cleanTitle = this.sanitizeFileName(item.title) || (item.source.videoId ? `Video ${item.source.videoId}` : "Playlist Video");
+      let filePath = targetFolder ? `${targetFolder}/${cleanTitle}.md` : `${cleanTitle}.md`;
+      filePath = (0, import_obsidian13.normalizePath)(filePath);
+      let counter = 1;
+      while (this.app.vault.getAbstractFileByPath(filePath)) {
+        filePath = targetFolder ? (0, import_obsidian13.normalizePath)(`${targetFolder}/${cleanTitle} (${counter}).md`) : (0, import_obsidian13.normalizePath)(`${cleanTitle} (${counter}).md`);
+        counter++;
+      }
+      const propertyKey = this.settings.playlistNoteProperty?.trim() || "video_link";
+      const fileContent = `---
+${propertyKey}: "${item.source.url}"
+---
+`;
+      const newFile = await this.app.vault.create(filePath, fileContent);
+      new import_obsidian13.Notice(`MediaScribe: Created note "${newFile.basename}"`);
+      const leaf = this.app.workspace.getLeaf(false);
+      await leaf.openFile(newFile);
+    } catch (err) {
+      console.error("[MediaScribe] Failed to create note for playlist item:", err);
+      new import_obsidian13.Notice(`MediaScribe: Failed to create note: ${err?.message || err}`);
     }
   }
   updatePlaylistUI() {
@@ -3224,49 +3599,63 @@ var MediaScribeEmbeddedWidget = class {
     this.renderPlaylistItems();
     this.updateSidePanelTabs();
   }
-  switchPlaylistItem(idx) {
+  async switchPlaylistItem(idx) {
     if (!this.currentSource?.playlistItems || !this.currentSource.playlistItems[idx]) return;
-    this.playlistIndex = idx;
+    await this.saveCurrentPosition();
     const selectedItem = this.currentSource.playlistItems[idx];
-    if (this.currentSource.type === "youtube" && this.player && "playVideoAt" in this.player) {
-      this.player.playVideoAt(idx);
-      if (selectedItem.title) {
-        this.currentSource.title = selectedItem.title;
-        this.updateHeaderInfo();
+    if (!selectedItem) return;
+    const targetVideoId = selectedItem.videoId || selectedItem.source?.videoId;
+    const targetUrl = selectedItem.source?.url;
+    let resumeTime = 0;
+    if (this.settings.rememberPlaybackPosition) {
+      if (targetVideoId && typeof this.settings.storedPlaybackPositions?.[targetVideoId] === "number") {
+        resumeTime = this.settings.storedPlaybackPositions[targetVideoId];
+      } else if (targetUrl && typeof this.settings.storedPlaybackPositions?.[targetUrl] === "number") {
+        resumeTime = this.settings.storedPlaybackPositions[targetUrl];
       }
-      if (selectedItem.source?.videoId) {
-        this.currentSource.videoId = selectedItem.source.videoId;
-        this.fetchAndSetDescription(selectedItem.source.videoId);
-        this.loadTranscript(selectedItem.source);
-      }
-      this.renderPlaylistItems();
-      this.updateSidePanelTabs();
-      return;
     }
     const newSource = {
-      ...selectedItem.source,
+      ...selectedItem.source || {},
+      type: "youtube",
+      url: targetUrl || (targetVideoId ? `https://www.youtube.com/watch?v=${targetVideoId}` : this.currentSource.url),
+      originalInput: targetUrl || this.currentSource.originalInput,
+      videoId: targetVideoId,
+      title: selectedItem.title || selectedItem.source?.title,
+      initialTime: resumeTime,
       isPlaylist: true,
       playlistIndex: idx,
-      playlistItems: this.currentSource.playlistItems
+      playlistItems: this.currentSource.playlistItems,
+      playlistId: this.currentSource.playlistId,
+      isLocal: false
     };
-    this.loadMedia(newSource);
+    await this.loadMedia(newSource, true);
   }
-  handleNextVideo() {
-    if (this.currentSource?.playlistItems) {
-      if (this.playlistIndex < this.currentSource.playlistItems.length - 1) {
-        this.switchPlaylistItem(this.playlistIndex + 1);
+  async handleNextVideo() {
+    if (!this.currentSource) return;
+    if (!this.currentSource.playlistItems && this.currentSource.playlistId) {
+      const items = await fetchYouTubePlaylistItems(this.currentSource.playlistId);
+      if (items && items.length > 0) {
+        this.currentSource.playlistItems = items;
       }
-    } else if (this.player && this.player.nextVideo) {
-      this.player.nextVideo();
+    }
+    if (this.currentSource.playlistItems && this.currentSource.playlistItems.length > 0) {
+      if (this.playlistIndex < this.currentSource.playlistItems.length - 1) {
+        await this.switchPlaylistItem(this.playlistIndex + 1);
+      }
     }
   }
-  handlePreviousVideo() {
-    if (this.currentSource?.playlistItems) {
-      if (this.playlistIndex > 0) {
-        this.switchPlaylistItem(this.playlistIndex - 1);
+  async handlePreviousVideo() {
+    if (!this.currentSource) return;
+    if (!this.currentSource.playlistItems && this.currentSource.playlistId) {
+      const items = await fetchYouTubePlaylistItems(this.currentSource.playlistId);
+      if (items && items.length > 0) {
+        this.currentSource.playlistItems = items;
       }
-    } else if (this.player && this.player.previousVideo) {
-      this.player.previousVideo();
+    }
+    if (this.currentSource.playlistItems && this.currentSource.playlistItems.length > 0) {
+      if (this.playlistIndex > 0) {
+        await this.switchPlaylistItem(this.playlistIndex - 1);
+      }
     }
   }
   buildLoopBar(parentEl) {
@@ -3367,6 +3756,7 @@ var MediaScribeEmbeddedWidget = class {
       }
     });
     this.player.on("playlistindexchange", (idx) => {
+      if (idx < 0) return;
       if (this.playlistIndex !== idx) {
         this.playlistIndex = idx;
         if (this.currentSource) {
@@ -3438,8 +3828,37 @@ var MediaScribeEmbeddedWidget = class {
     }
   }
   async saveCurrentPosition() {
-    if (!this.settings.rememberPlaybackPosition || !this.currentSource || this.currentTime <= 0) return;
-    this.settings.storedPlaybackPositions[this.currentSource.url] = Math.floor(this.currentTime);
+    if (!this.settings.rememberPlaybackPosition || !this.currentSource) return;
+    if (this.player) {
+      try {
+        const pTime = await this.player.getCurrentTime();
+        if (typeof pTime === "number" && pTime > 0) {
+          this.currentTime = pTime;
+        }
+      } catch {
+      }
+    }
+    if (this.currentTime <= 0) return;
+    const time = Math.floor(this.currentTime);
+    if (!this.settings.storedPlaybackPositions) {
+      this.settings.storedPlaybackPositions = {};
+    }
+    if (this.currentSource.url) {
+      this.settings.storedPlaybackPositions[this.currentSource.url] = time;
+    }
+    if (this.currentSource.videoId) {
+      this.settings.storedPlaybackPositions[this.currentSource.videoId] = time;
+    }
+    if (!this.settings.storedPlaybackLastAccessed) {
+      this.settings.storedPlaybackLastAccessed = {};
+    }
+    const now = Date.now();
+    if (this.currentSource.url) {
+      this.settings.storedPlaybackLastAccessed[this.currentSource.url] = now;
+    }
+    if (this.currentSource.videoId) {
+      this.settings.storedPlaybackLastAccessed[this.currentSource.videoId] = now;
+    }
     await this.onSettingsChange(this.settings);
   }
   buildResizeHandle(parentEl) {
@@ -3589,6 +4008,9 @@ var EmbeddedPlayerManager = class {
     }
     return null;
   }
+  getActiveSource() {
+    return this.getActiveEmbeddedWidget()?.getCurrentSource() || null;
+  }
   /**
    * Inspects a MarkdownView and mounts or dismounts the embedded player
    */
@@ -3605,7 +4027,7 @@ var EmbeddedPlayerManager = class {
     if (this.closedNotes.has(file.path) && !forceOpen) {
       return;
     }
-    const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames);
+    const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
     if (source) {
       let widget = this.activeWidgets.get(view);
       if (!widget) {
@@ -3660,7 +4082,7 @@ var EmbeddedPlayerManager = class {
     const file = view.file;
     this.settings.embeddedPosition = position;
     await this.onSettingsChange(this.settings);
-    const source = sourceToLoad || (file ? this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames) : null);
+    const source = sourceToLoad || (file ? this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty) : null);
     if (!source) {
       new import_obsidian14.Notice("MediaScribe: No media found to dock into note.");
       return;
@@ -3724,848 +4146,15 @@ var EmbeddedPlayerManager = class {
   }
 };
 
-// src/ui/MediaScribeView.ts
-var import_obsidian15 = require("obsidian");
-var VIEW_TYPE_MEDIASCREIBE = "mediascribe-view";
-var MediaScribeView = class extends import_obsidian15.ItemView {
-  constructor(leaf, plugin, settings, screenshotService, timestampService, typingScribeService, transcriptService, onSettingsChange) {
-    super(leaf);
-    this.player = null;
-    this.currentSource = null;
-    this.ambientGlowService = new AmbientGlowService();
-    // UI Components
-    this.headerTitleEl = null;
-    this.playerContainerEl = null;
-    this.controlsEl = null;
-    this.playBtn = null;
-    this.timeDisplayEl = null;
-    this.progressSlider = null;
-    this.timelineMarkers = null;
-    this.transcriptPanel = null;
-    this.transcriptBtn = null;
-    this.descriptionViewEl = null;
-    this.descriptionBtn = null;
-    this.loopBarEl = null;
-    this.speedBtn = null;
-    // State
-    this.currentTime = 0;
-    this.duration = 0;
-    this.isScrubbing = false;
-    this.loopA = null;
-    this.loopB = null;
-    this.isLooping = false;
-    this.isTranscriptVisible = false;
-    this.isDescriptionVisible = false;
-    this.currentDescription = null;
-    this.currentAuthor = null;
-    this.isLoadingDescription = false;
-    this.returnPosition = "top";
-    this.plugin = plugin;
-    this.settings = settings;
-    this.screenshotService = screenshotService;
-    this.timestampService = timestampService;
-    this.typingScribeService = typingScribeService;
-    this.transcriptService = transcriptService;
-    this.onSettingsChange = onSettingsChange;
-  }
-  setOriginNotePath(path) {
-    this.originNotePath = path;
-  }
-  setReturnPosition(pos) {
-    this.returnPosition = pos;
-  }
-  getViewType() {
-    return VIEW_TYPE_MEDIASCREIBE;
-  }
-  getDisplayText() {
-    return this.currentSource?.title || "MediaScribe Player";
-  }
-  getIcon() {
-    return "play-circle";
-  }
-  getActivePlayer() {
-    return this.player;
-  }
-  getCurrentSource() {
-    return this.currentSource;
-  }
-  async onOpen() {
-    const container = this.contentEl;
-    container.empty();
-    container.addClass("mediascribe-view-root");
-    this.buildHeader(container);
-    this.playerContainerEl = container.createDiv({ cls: "mediascribe-player-container" });
-    this.buildControls(container);
-    this.buildLoopBar(container);
-    this.transcriptPanel = new TranscriptPanel(container, this.app, () => this.player);
-    this.transcriptPanel.setVisible(this.isTranscriptVisible);
-    this.descriptionViewEl = container.createDiv({ cls: "mediascribe-side-view mediascribe-description-view is-hidden" });
-    this.renderDescriptionView();
-  }
-  async loadMedia(source, forceReload = false) {
-    if (!forceReload && this.currentSource && this.currentSource.url === source.url && this.player) {
-      return;
-    }
-    await this.saveCurrentPosition();
-    if (this.player) {
-      this.player.destroy();
-      this.player = null;
-    }
-    this.currentSource = source;
-    if (this.headerTitleEl) {
-      this.headerTitleEl.setText(source.title || (source.isLocal ? source.localFile?.name || "Local Media" : "Media Stream"));
-    }
-    let startPosition = source.initialTime || 0;
-    if (this.settings.rememberPlaybackPosition && this.settings.storedPlaybackPositions[source.url]) {
-      startPosition = this.settings.storedPlaybackPositions[source.url];
-    }
-    if (!this.playerContainerEl) return;
-    if (source.type === "youtube" && source.videoId) {
-      this.player = new YouTubePlayer(
-        source.videoId,
-        startPosition,
-        source.playlistId,
-        this.settings.hideNativeYouTubeControls,
-        this.settings.hideYouTubeOverlays,
-        this.settings.youtubeCropZoom,
-        Boolean(source.isShorts)
-      );
-    } else {
-      const isAudio = source.type === "html5_audio";
-      this.player = new HTML5Player(source.url, isAudio, startPosition);
-    }
-    this.typingScribeService.setPlayer(this.player);
-    this.player.mount(this.playerContainerEl);
-    this.ambientGlowService.attach(
-      this.playerContainerEl,
-      source,
-      this.player,
-      this.settings.enableAmbientMode
-    );
-    this.bindPlayerEvents();
-    this.loadTranscript(source);
-    if (source.type === "youtube" && source.videoId) {
-      this.fetchAndSetDescription(source.videoId);
-    }
-  }
-  async loadTranscript(source) {
-    if (!this.transcriptPanel) return;
-    this.transcriptPanel.clear();
-    this.transcriptPanel.setLoading(true);
-    try {
-      if (source.isLocal && source.localFile) {
-        const items = await this.transcriptService.loadLocalTranscriptForFile(source.localFile);
-        if (items && items.length > 0) {
-          this.transcriptPanel.setItems(items);
-          return;
-        }
-      }
-      if (source.type === "youtube" && source.videoId) {
-        const items = await this.transcriptService.fetchYouTubeTranscript(source.videoId);
-        if (items && items.length > 0) {
-          this.transcriptPanel.setItems(items);
-          return;
-        }
-      }
-      this.transcriptPanel.setItems([]);
-    } catch {
-      this.transcriptPanel.setItems([]);
-    }
-  }
-  bindPlayerEvents() {
-    if (!this.player) return;
-    this.player.on("ready", () => {
-      this.updatePlayState(false);
-    });
-    this.player.on("play", () => {
-      this.updatePlayState(true);
-    });
-    this.player.on("pause", () => {
-      this.updatePlayState(false);
-      this.saveCurrentPosition();
-    });
-    this.player.on("timeupdate", async (time) => {
-      this.currentTime = time;
-      if (this.duration <= 0 && this.player) {
-        const dur = await this.player.getDuration();
-        if (dur > 0) {
-          this.duration = dur;
-          if (this.progressSlider) {
-            this.progressSlider.max = dur.toString();
-          }
-          if (this.timelineMarkers) {
-            this.timelineMarkers.setDuration(dur);
-          }
-        }
-      }
-      this.updateTimeDisplay();
-      if (this.isLooping && this.loopA !== null && this.loopB !== null) {
-        if (time >= this.loopB) {
-          this.player?.seekTo(this.loopA);
-        }
-      }
-      if (this.transcriptPanel) {
-        this.transcriptPanel.updateTime(time);
-      }
-    });
-    this.player.on("durationchange", (dur) => {
-      if (dur > 0) {
-        this.duration = dur;
-        if (this.progressSlider) {
-          this.progressSlider.max = dur.toString();
-        }
-        if (this.timelineMarkers) {
-          this.timelineMarkers.setDuration(dur);
-        }
-        this.updateTimeDisplay();
-      }
-    });
-    this.player.on("ratechange", (rate) => {
-      if (this.speedBtn) {
-        this.speedBtn.setText(`${rate}x`);
-        this.speedBtn.setAttribute("title", `Playback Speed: ${rate}x (Click to cycle)`);
-      }
-    });
-    this.player.on("ended", () => {
-      this.updatePlayState(false);
-      this.saveCurrentPosition();
-    });
-  }
-  buildHeader(parentEl) {
-    const header = parentEl.createDiv({ cls: "mediascribe-view-header" });
-    const infoSection = header.createDiv({ cls: "mediascribe-header-info" });
-    const iconSpan = infoSection.createSpan({ cls: "mediascribe-header-icon" });
-    (0, import_obsidian15.setIcon)(iconSpan, "video");
-    this.headerTitleEl = infoSection.createSpan({ cls: "mediascribe-header-title" });
-    this.headerTitleEl.setText("No Media Loaded");
-    const actions = header.createDiv({ cls: "mediascribe-header-actions" });
-    const openUrlBtn = actions.createEl("button", {
-      cls: "mediascribe-btn-icon",
-      attr: { title: "Open Media from URL or Vault File" }
-    });
-    (0, import_obsidian15.setIcon)(openUrlBtn, "link");
-    openUrlBtn.addEventListener("click", () => this.promptForMedia());
-    const ambientBtn = actions.createEl("button", {
-      cls: `mediascribe-btn-icon ${this.settings.enableAmbientMode ? "is-active" : ""}`,
-      attr: { title: "Toggle Ambient Mode (Glow Effect)" }
-    });
-    (0, import_obsidian15.setIcon)(ambientBtn, "sparkles");
-    ambientBtn.addEventListener("click", async () => {
-      this.settings.enableAmbientMode = !this.settings.enableAmbientMode;
-      ambientBtn.toggleClass("is-active", this.settings.enableAmbientMode);
-      this.ambientGlowService.setEnabled(this.settings.enableAmbientMode);
-      await this.onSettingsChange(this.settings);
-    });
-    const refreshPinsBtn = actions.createEl("button", {
-      cls: "mediascribe-btn-icon",
-      attr: { title: "Refresh Note Timeline Markers" }
-    });
-    (0, import_obsidian15.setIcon)(refreshPinsBtn, "bookmark");
-    refreshPinsBtn.addEventListener("click", () => {
-      this.timelineMarkers?.refresh();
-      new import_obsidian15.Notice("MediaScribe: Timeline markers refreshed.");
-    });
-    const posBtn = actions.createEl("button", {
-      cls: "mediascribe-btn-icon",
-      attr: { title: "Switch Position (Top, Vertical, Sidebar)" }
-    });
-    (0, import_obsidian15.setIcon)(posBtn, "layout");
-    posBtn.addEventListener("click", (e) => {
-      this.showPositionMenu(e);
-    });
-  }
-  showPositionMenu(e) {
-    const menu = new import_obsidian15.Menu();
-    const isSidebar = this.leaf.getRoot() === this.app.workspace.rightSplit;
-    menu.addItem((item) => {
-      item.setTitle("Dock to Note (Top)").setIcon("rows").onClick(() => this.switchToEmbedded("top"));
-    });
-    menu.addItem((item) => {
-      item.setTitle("Dock to Note (Vertical Right)").setIcon("panel-right").onClick(() => this.switchToEmbedded("vertical_right"));
-    });
-    menu.addItem((item) => {
-      item.setTitle("Dock to Note (Vertical Left)").setIcon("panel-left").onClick(() => this.switchToEmbedded("vertical_left"));
-    });
-    menu.addItem((item) => {
-      item.setTitle("Move to Right Sidebar").setIcon("layout-sidebar-right").setChecked(isSidebar).onClick(async () => {
-        if (!isSidebar) {
-          const time = await this.player?.getCurrentTime() || 0;
-          const wasPlaying = this.player?.isPlaying || false;
-          const source = this.currentSource;
-          if (source) {
-            source.initialTime = time;
-          }
-          if (source && this.plugin) {
-            await this.plugin.activateSidebarView(source, time, wasPlaying, "top");
-          }
-        }
-      });
-    });
-    menu.showAtMouseEvent(e);
-  }
-  async switchToEmbedded(pos) {
-    const targetPos = pos || this.returnPosition || "top";
-    const time = await this.player?.getCurrentTime() || 0;
-    const wasPlaying = this.player?.isPlaying || false;
-    const source = this.currentSource;
-    if (!source) {
-      new import_obsidian15.Notice("MediaScribe: No media currently loaded.");
-      return;
-    }
-    source.initialTime = time;
-    let targetView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
-    if (!targetView && this.originNotePath) {
-      const originFile = this.app.vault.getAbstractFileByPath(this.originNotePath);
-      if (originFile instanceof import_obsidian15.TFile) {
-        const markdownLeaves = this.app.workspace.getLeavesOfType("markdown");
-        for (const l of markdownLeaves) {
-          if (l.view.file?.path === originFile.path) {
-            targetView = l.view;
-            this.app.workspace.setActiveLeaf(l, { focus: true });
-            break;
-          }
-        }
-        if (!targetView) {
-          const leaf = this.app.workspace.getLeaf(false);
-          await leaf.openFile(originFile);
-          if (leaf.view instanceof import_obsidian15.MarkdownView) {
-            targetView = leaf.view;
-            this.app.workspace.setActiveLeaf(leaf, { focus: true });
-          }
-        }
-      }
-    }
-    if (!targetView) {
-      const markdownLeaves = this.app.workspace.getLeavesOfType("markdown");
-      if (source.localFile) {
-        for (const l of markdownLeaves) {
-          if (l.view.file?.path === source.localFile.path) {
-            targetView = l.view;
-            this.app.workspace.setActiveLeaf(l, { focus: true });
-            break;
-          }
-        }
-      }
-      if (!targetView && this.plugin?.detector) {
-        for (const l of markdownLeaves) {
-          const mv = l.view;
-          if (mv.file) {
-            const noteSource = this.plugin.detector.extractMediaFromNote(mv.file, this.settings.mediaPropertyNames);
-            if (noteSource && noteSource.url === source.url) {
-              targetView = mv;
-              this.app.workspace.setActiveLeaf(l, { focus: true });
-              break;
-            }
-          }
-        }
-      }
-      if (!targetView && markdownLeaves.length > 0) {
-        const rootLeaves = markdownLeaves.filter((l) => l.getRoot() === this.app.workspace.rootSplit);
-        const chosen = rootLeaves[0] || markdownLeaves[0];
-        if (chosen && chosen.view instanceof import_obsidian15.MarkdownView) {
-          targetView = chosen.view;
-          this.app.workspace.setActiveLeaf(chosen, { focus: true });
-        }
-      }
-    }
-    if (!targetView) {
-      new import_obsidian15.Notice("MediaScribe: Please open or focus a note in the editor to dock the player.");
-      return;
-    }
-    if (this.plugin?.embeddedManager) {
-      await this.plugin.embeddedManager.mountWithPosition(targetView, targetPos, time, wasPlaying, source);
-      new import_obsidian15.Notice(`MediaScribe: Player docked to note (${targetPos === "top" ? "Top" : targetPos === "vertical_right" ? "Vertical Right" : "Vertical Left"}).`);
-    }
-    if (this.leaf.getRoot() === this.app.workspace.rightSplit) {
-      this.leaf.detach();
-    }
-  }
-  buildControls(parentEl) {
-    this.controlsEl = parentEl.createDiv({ cls: "mediascribe-controls-card" });
-    const timelineRow = this.controlsEl.createDiv({ cls: "mediascribe-timeline-row" });
-    this.timeDisplayEl = timelineRow.createSpan({ cls: "mediascribe-time-display" });
-    this.timeDisplayEl.setText("00:00 / 00:00");
-    const scrubberContainer = timelineRow.createDiv({ cls: "mediascribe-scrubber-container mediascribe-ctrl-mid" });
-    scrubberContainer.style.flex = "1 1 auto";
-    scrubberContainer.style.minWidth = "60px";
-    scrubberContainer.style.width = "100%";
-    this.progressSlider = scrubberContainer.createEl("input", {
-      type: "range",
-      cls: "mediascribe-progress-slider",
-      attr: { min: "0", max: "100", value: "0", step: "0.1" }
-    });
-    this.progressSlider.style.width = "100%";
-    this.progressSlider.style.minWidth = "100%";
-    this.progressSlider.style.maxWidth = "100%";
-    this.progressSlider.style.flex = "1 1 100%";
-    this.progressSlider.addEventListener("mousedown", () => {
-      this.isScrubbing = true;
-    });
-    this.progressSlider.addEventListener("mouseup", () => {
-      if (this.player && this.progressSlider) {
-        const target = parseFloat(this.progressSlider.value);
-        this.player.seekTo(target);
-      }
-      this.isScrubbing = false;
-    });
-    this.progressSlider.addEventListener("input", () => {
-      if (this.progressSlider) {
-        this.currentTime = parseFloat(this.progressSlider.value);
-        const percent = this.duration > 0 ? this.currentTime / this.duration * 100 : 0;
-        this.progressSlider.style.setProperty("--progress-percent", `${percent.toFixed(2)}%`);
-        this.updateTimeDisplay();
-      }
-    });
-    this.timelineMarkers = new TimelineMarkers(scrubberContainer, this.app, () => this.player);
-    const buttonsRow = this.controlsEl.createDiv({ cls: "mediascribe-buttons-row" });
-    const leftControls = buttonsRow.createDiv({ cls: "mediascribe-ctrl-group mediascribe-ctrl-left" });
-    this.playBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-play-btn",
-      attr: { title: "Play / Pause (Ctrl+K)" }
-    });
-    (0, import_obsidian15.setIcon)(this.playBtn, "play");
-    this.playBtn.addEventListener("click", async () => {
-      if (!this.player) return;
-      await this.player.togglePlay();
-      this.updatePlayState(this.player.isPlaying);
-    });
-    const rewBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: `Rewind ${this.settings.jumpStepSeconds}s (Ctrl+J)` }
-    });
-    (0, import_obsidian15.setIcon)(rewBtn, "rotate-ccw");
-    rewBtn.addEventListener("click", () => this.player?.jump(-this.settings.jumpStepSeconds));
-    const fwdBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: `Forward ${this.settings.jumpStepSeconds}s (Ctrl+L)` }
-    });
-    (0, import_obsidian15.setIcon)(fwdBtn, "rotate-cw");
-    fwdBtn.addEventListener("click", () => this.player?.jump(this.settings.jumpStepSeconds));
-    const volumeGroup = leftControls.createDiv({ cls: "mediascribe-volume-group" });
-    const volumeBtn = volumeGroup.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-volume-btn",
-      attr: { title: "Mute / Unmute" }
-    });
-    (0, import_obsidian15.setIcon)(volumeBtn, "volume-2");
-    const volumeSlider = volumeGroup.createEl("input", {
-      type: "range",
-      cls: "mediascribe-volume-slider",
-      attr: { min: "0", max: "100", value: "100", step: "1", title: "Volume" }
-    });
-    volumeSlider.style.width = "0px";
-    volumeSlider.style.minWidth = "0px";
-    volumeSlider.style.maxWidth = "0px";
-    volumeSlider.style.padding = "0px";
-    volumeSlider.style.setProperty("--volume-percent", "100%");
-    volumeGroup.addEventListener("mouseenter", () => {
-      volumeSlider.style.width = "52px";
-      volumeSlider.style.minWidth = "52px";
-      volumeSlider.style.maxWidth = "52px";
-      volumeSlider.style.marginLeft = "4px";
-      volumeSlider.style.opacity = "1";
-      volumeSlider.style.pointerEvents = "auto";
-    });
-    volumeGroup.addEventListener("mouseleave", () => {
-      volumeSlider.style.width = "0px";
-      volumeSlider.style.minWidth = "0px";
-      volumeSlider.style.maxWidth = "0px";
-      volumeSlider.style.marginLeft = "0px";
-      volumeSlider.style.opacity = "0";
-      volumeSlider.style.pointerEvents = "none";
-    });
-    let prevVolume = 100;
-    volumeBtn.addEventListener("click", () => {
-      if (!this.player) return;
-      const current = parseFloat(volumeSlider.value);
-      if (current > 0) {
-        prevVolume = current;
-        volumeSlider.value = "0";
-        volumeSlider.style.setProperty("--volume-percent", "0%");
-        this.player.setVolume(0);
-        volumeBtn.empty();
-        (0, import_obsidian15.setIcon)(volumeBtn, "volume-x");
-      } else {
-        const restore = prevVolume || 100;
-        volumeSlider.value = restore.toString();
-        volumeSlider.style.setProperty("--volume-percent", `${restore}%`);
-        this.player.setVolume(restore);
-        volumeBtn.empty();
-        (0, import_obsidian15.setIcon)(volumeBtn, "volume-2");
-      }
-    });
-    volumeSlider.addEventListener("input", () => {
-      const val = parseFloat(volumeSlider.value);
-      volumeSlider.style.setProperty("--volume-percent", `${val}%`);
-      this.player?.setVolume(val);
-      volumeBtn.empty();
-      (0, import_obsidian15.setIcon)(volumeBtn, val === 0 ? "volume-x" : val < 50 ? "volume-1" : "volume-2");
-    });
-    const rightControls = buttonsRow.createDiv({ cls: "mediascribe-ctrl-group mediascribe-ctrl-right" });
-    const speeds = [1, 1.25, 1.5, 1.75, 2, 0.5, 0.75];
-    let currentSpeedIndex = 0;
-    this.speedBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-speed-btn",
-      attr: { title: "Playback Speed: 1x (Click to cycle)" }
-    });
-    this.speedBtn.setText("1x");
-    this.speedBtn.addEventListener("click", () => {
-      currentSpeedIndex = (currentSpeedIndex + 1) % speeds.length;
-      const speed = speeds[currentSpeedIndex];
-      this.player?.setPlaybackRate(speed);
-      if (this.speedBtn) {
-        this.speedBtn.setText(`${speed}x`);
-        this.speedBtn.setAttribute("title", `Playback Speed: ${speed}x (Click to cycle)`);
-      }
-    });
-    const scribeBtn = rightControls.createEl("button", {
-      cls: `mediascribe-ctrl-btn ${this.typingScribeService.active ? "is-active" : ""}`,
-      attr: { title: "Toggle Auto-Pause While Typing" }
-    });
-    (0, import_obsidian15.setIcon)(scribeBtn, "pen-tool");
-    scribeBtn.addEventListener("click", () => {
-      const active = this.typingScribeService.toggle();
-      scribeBtn.toggleClass("is-active", active);
-    });
-    const timeBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Insert Current Timestamp into Note (Ctrl+I)" }
-    });
-    (0, import_obsidian15.setIcon)(timeBtn, "clock");
-    timeBtn.addEventListener("click", () => {
-      const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
-      this.timestampService.insertCurrentTimestamp(activeView);
-    });
-    const snapBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Capture Video Frame to Note (Ctrl+Shift+S)" }
-    });
-    (0, import_obsidian15.setIcon)(snapBtn, "camera");
-    snapBtn.addEventListener("click", () => this.captureScreenshot());
-    this.transcriptBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-cc-btn",
-      attr: { title: "Toggle Subtitles / Transcript Panel" }
-    });
-    (0, import_obsidian15.setIcon)(this.transcriptBtn, "subtitles");
-    this.transcriptBtn.addEventListener("click", () => {
-      this.toggleTranscript();
-    });
-    this.descriptionBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Toggle Video Description & Notes" }
-    });
-    (0, import_obsidian15.setIcon)(this.descriptionBtn, "file-text");
-    this.descriptionBtn.addEventListener("click", () => {
-      this.toggleDescription();
-    });
-    const loopBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Toggle A-B Repeat Loop" }
-    });
-    (0, import_obsidian15.setIcon)(loopBtn, "repeat");
-    loopBtn.addEventListener("click", () => {
-      this.isLooping = !this.isLooping;
-      loopBtn.toggleClass("is-active", this.isLooping);
-      this.loopBarEl?.toggleClass("is-hidden", !this.isLooping);
-    });
-  }
-  toggleTranscript() {
-    if (this.isTranscriptVisible) {
-      this.isTranscriptVisible = false;
-      this.transcriptBtn?.removeClass("is-active");
-      this.transcriptPanel?.setVisible(false);
-    } else {
-      this.isTranscriptVisible = true;
-      this.transcriptBtn?.addClass("is-active");
-      this.transcriptPanel?.setVisible(true);
-      if (this.isDescriptionVisible) {
-        this.isDescriptionVisible = false;
-        this.descriptionBtn?.removeClass("is-active");
-        this.descriptionViewEl?.addClass("is-hidden");
-      }
-    }
-  }
-  toggleDescription() {
-    if (this.isDescriptionVisible) {
-      this.isDescriptionVisible = false;
-      this.descriptionBtn?.removeClass("is-active");
-      this.descriptionViewEl?.addClass("is-hidden");
-    } else {
-      this.isDescriptionVisible = true;
-      this.descriptionBtn?.addClass("is-active");
-      this.descriptionViewEl?.removeClass("is-hidden");
-      this.renderDescriptionView();
-      if (this.isTranscriptVisible) {
-        this.isTranscriptVisible = false;
-        this.transcriptBtn?.removeClass("is-active");
-        this.transcriptPanel?.setVisible(false);
-      }
-    }
-  }
-  buildLoopBar(parentEl) {
-    this.loopBarEl = parentEl.createDiv({ cls: "mediascribe-loop-bar is-hidden" });
-    const title = this.loopBarEl.createSpan({ cls: "mediascribe-loop-title" });
-    title.setText("A-B Loop:");
-    const btnA = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Set A" });
-    const spanA = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
-    btnA.addEventListener("click", async () => {
-      if (this.player) {
-        this.loopA = await this.player.getCurrentTime();
-        spanA.setText(formatSeconds(this.loopA));
-        new import_obsidian15.Notice(`MediaScribe: Point A set to ${formatSeconds(this.loopA)}`);
-      }
-    });
-    const btnB = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Set B" });
-    const spanB = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
-    btnB.addEventListener("click", async () => {
-      if (this.player) {
-        this.loopB = await this.player.getCurrentTime();
-        spanB.setText(formatSeconds(this.loopB));
-        new import_obsidian15.Notice(`MediaScribe: Point B set to ${formatSeconds(this.loopB)}`);
-      }
-    });
-    const clearBtn = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Clear" });
-    clearBtn.addEventListener("click", () => {
-      this.loopA = null;
-      this.loopB = null;
-      spanA.setText("--:--");
-      spanB.setText("--:--");
-      new import_obsidian15.Notice("MediaScribe: A-B loop cleared.");
-    });
-  }
-  async captureScreenshot() {
-    if (!this.player || !this.currentSource) {
-      new import_obsidian15.Notice("MediaScribe: No media player active to capture.");
-      return;
-    }
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
-    await this.screenshotService.captureAndInsert(
-      this.player,
-      this.currentSource,
-      activeView,
-      this.playerContainerEl
-    );
-  }
-  updatePlayState(isPlaying) {
-    if (this.playBtn) {
-      this.playBtn.empty();
-      (0, import_obsidian15.setIcon)(this.playBtn, isPlaying ? "pause" : "play");
-      this.playBtn.setAttribute("title", isPlaying ? "Pause (Ctrl+K)" : "Play (Ctrl+K)");
-    }
-  }
-  updateTimeDisplay() {
-    if (this.timeDisplayEl) {
-      this.timeDisplayEl.setText(`${formatSeconds(this.currentTime)} / ${formatSeconds(this.duration)}`);
-    }
-    if (this.progressSlider && !this.isScrubbing) {
-      this.progressSlider.value = this.currentTime.toString();
-      const percent = this.duration > 0 ? this.currentTime / this.duration * 100 : 0;
-      this.progressSlider.style.setProperty("--progress-percent", `${percent.toFixed(2)}%`);
-    }
-  }
-  async saveCurrentPosition() {
-    if (!this.settings.rememberPlaybackPosition || !this.currentSource || this.currentTime <= 0) return;
-    this.settings.storedPlaybackPositions[this.currentSource.url] = Math.floor(this.currentTime);
-    await this.onSettingsChange(this.settings);
-  }
-  promptForMedia() {
-    const prompt = window.prompt("Enter YouTube URL, Web Video/Audio URL, or Vault filename (e.g., lecture.mp4):");
-    if (prompt && prompt.trim()) {
-      const detector = this.app.plugins.plugins.mediascribe?.detector;
-      if (detector) {
-        const info = detector.resolveSource(prompt.trim());
-        if (info) {
-          this.loadMedia(info);
-        } else {
-          new import_obsidian15.Notice("MediaScribe: Could not recognize media source.");
-        }
-      }
-    }
-  }
-  async onClose() {
-    await this.saveCurrentPosition();
-    this.ambientGlowService.destroy();
-    if (this.player) {
-      this.player.destroy();
-      this.player = null;
-    }
-    this.typingScribeService.setPlayer(null);
-  }
-  async fetchAndSetDescription(videoId) {
-    if (!videoId) return;
-    this.isLoadingDescription = true;
-    if (this.descriptionViewEl && this.isDescriptionVisible) {
-      this.renderDescriptionView();
-    }
-    try {
-      const meta = await fetchYouTubeVideoMetadata(videoId);
-      if (meta) {
-        if (meta.isShorts && this.currentSource) {
-          this.currentSource.isShorts = true;
-          if (this.player && "setShortsMode" in this.player) {
-            this.player.setShortsMode(true);
-          }
-        }
-        this.currentDescription = meta.description || "No description provided for this video.";
-        this.currentAuthor = meta.author || "";
-        if (meta.title && this.currentSource && (!this.currentSource.title || this.currentSource.title === "Media Stream" || this.currentSource.title.startsWith("Part ") || this.currentSource.title.startsWith("YouTube ("))) {
-          this.currentSource.title = meta.title;
-          if (this.headerTitleEl) {
-            this.headerTitleEl.setText(meta.title);
-          }
-        }
-      } else {
-        this.currentDescription = "Could not load description.";
-      }
-    } catch {
-      this.currentDescription = "Failed to load description.";
-    } finally {
-      this.isLoadingDescription = false;
-      if (this.descriptionViewEl && this.isDescriptionVisible) {
-        this.renderDescriptionView();
-      }
-    }
-  }
-  renderDescriptionView() {
-    if (!this.descriptionViewEl) return;
-    this.descriptionViewEl.empty();
-    const container = this.descriptionViewEl.createDiv({ cls: "mediascribe-description-container" });
-    const actionsBar = container.createDiv({ cls: "mediascribe-desc-actions" });
-    if (this.currentAuthor) {
-      const authorBadge = actionsBar.createDiv({ cls: "mediascribe-desc-author" });
-      (0, import_obsidian15.setIcon)(authorBadge.createSpan(), "user");
-      authorBadge.createSpan({ text: ` ${this.currentAuthor}` });
-    }
-    const spacer = actionsBar.createDiv({ cls: "mediascribe-desc-spacer" });
-    spacer.style.flex = "1 1 auto";
-    const copyBtn = actionsBar.createEl("button", {
-      cls: "mediascribe-desc-action-btn",
-      attr: { title: "Copy Description" }
-    });
-    (0, import_obsidian15.setIcon)(copyBtn, "copy");
-    copyBtn.createSpan({ text: " Copy" });
-    copyBtn.addEventListener("click", () => {
-      if (this.currentDescription) {
-        navigator.clipboard.writeText(this.currentDescription);
-        new import_obsidian15.Notice("MediaScribe: Description copied to clipboard.");
-      }
-    });
-    const insertBtn = actionsBar.createEl("button", {
-      cls: "mediascribe-desc-action-btn",
-      attr: { title: "Insert Description into Active Note" }
-    });
-    (0, import_obsidian15.setIcon)(insertBtn, "file-plus");
-    insertBtn.createSpan({ text: " Insert to Note" });
-    insertBtn.addEventListener("click", () => {
-      this.insertDescriptionIntoNote();
-    });
-    const bodyEl = container.createDiv({ cls: "mediascribe-desc-body" });
-    if (this.isLoadingDescription) {
-      const loading = bodyEl.createDiv({ cls: "mediascribe-desc-loading" });
-      loading.setText("Loading video description...");
-      return;
-    }
-    if (!this.currentDescription) {
-      const empty = bodyEl.createDiv({ cls: "mediascribe-desc-empty" });
-      empty.setText("No description available for this media.");
-      return;
-    }
-    this.renderFormattedDescription(bodyEl, this.currentDescription);
-  }
-  renderFormattedDescription(parentEl, text) {
-    const lines = text.split("\n");
-    for (const line of lines) {
-      const lineEl = parentEl.createDiv({ cls: "mediascribe-desc-line" });
-      if (!line.trim()) {
-        lineEl.createSpan({ text: "\xA0" });
-        continue;
-      }
-      const timestampRegex = /(?:^|(?<=[\s(\[]))((?:\d{1,2}:)?\d{1,2}:\d{2})(?=$|[\s)\]])/g;
-      let lastIndex = 0;
-      let match;
-      while ((match = timestampRegex.exec(line)) !== null) {
-        const matchStart = match.index;
-        const matchStr = match[1];
-        const matchLen = matchStr.length;
-        if (matchStart > lastIndex) {
-          this.renderTextWithLinks(lineEl, line.slice(lastIndex, matchStart));
-        }
-        const pill = lineEl.createSpan({ cls: "mediascribe-timestamp-pill", text: matchStr });
-        pill.setAttribute("title", `Seek to ${matchStr}`);
-        const parsedSec = parseTimestamp(matchStr);
-        if (parsedSec !== null) {
-          pill.addEventListener("click", () => {
-            this.player?.seekTo(parsedSec);
-          });
-        }
-        lastIndex = matchStart + matchLen;
-      }
-      if (lastIndex < line.length) {
-        this.renderTextWithLinks(lineEl, line.slice(lastIndex));
-      }
-    }
-  }
-  renderTextWithLinks(parentEl, text) {
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const parts = text.split(urlRegex);
-    for (const part of parts) {
-      if (/^https?:\/\//i.test(part)) {
-        const a = parentEl.createEl("a", {
-          cls: "mediascribe-desc-link",
-          text: part,
-          href: part
-        });
-        a.setAttribute("target", "_blank");
-        a.setAttribute("rel", "noopener");
-      } else {
-        parentEl.createSpan({ text: part });
-      }
-    }
-  }
-  insertDescriptionIntoNote() {
-    if (!this.currentDescription) {
-      new import_obsidian15.Notice("MediaScribe: No description to insert.");
-      return;
-    }
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
-    const editor = activeView?.editor;
-    if (!editor) {
-      new import_obsidian15.Notice("MediaScribe: No active note editor found.");
-      return;
-    }
-    const title = this.currentSource?.title || "Video";
-    let formattedText = `
-### Description - ${title}
-`;
-    if (this.currentAuthor) {
-      formattedText += `**Creator:** ${this.currentAuthor}
-
-`;
-    }
-    const lines = this.currentDescription.split("\n");
-    const convertedLines = lines.map((line) => {
-      return line.replace(/(?:^|(?<=[\s(\[]))(\d{1,2}:)?(\d{1,2}:\d{2})(?=$|[\s)\]])/g, (match) => {
-        const sec = parseTimestamp(match);
-        if (sec !== null && sec >= 0) {
-          return `[${match}](#t=${sec})`;
-        }
-        return match;
-      });
-    });
-    formattedText += convertedLines.join("\n") + "\n\n";
-    const cursor = editor.getCursor();
-    editor.replaceRange(formattedText, cursor);
-    new import_obsidian15.Notice("MediaScribe: Inserted description into note.");
-  }
-};
-
 // src/main.ts
-var MediaScribePlugin = class extends import_obsidian16.Plugin {
+var MediaScribePlugin = class extends import_obsidian15.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
   }
   async onload() {
     await this.loadSettings();
+    this.cleanExpiredHistory();
     this.detector = new MediaDetector(this.app);
     this.screenshotService = new ScreenshotService(this.app, this.settings);
     this.typingScribeService = new TypingScribeService(this.app, this.settings);
@@ -4573,7 +4162,8 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
     this.timestampService = new TimestampService(
       this.app,
       this.settings,
-      () => this.getActivePlayer()
+      () => this.getActivePlayer(),
+      () => this.embeddedManager?.getActiveSource() || null
     );
     this.embeddedManager = new EmbeddedPlayerManager(
       this,
@@ -4589,33 +4179,13 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
         await this.saveSettings();
       }
     );
-    this.registerView(
-      VIEW_TYPE_MEDIASCREIBE,
-      (leaf) => new MediaScribeView(
-        leaf,
-        this,
-        this.settings,
-        this.screenshotService,
-        this.timestampService,
-        this.typingScribeService,
-        this.transcriptService,
-        async (newSettings) => {
-          this.settings = newSettings;
-          await this.saveSettings();
-        }
-      )
-    );
     this.addRibbonIcon("play-circle", "MediaScribe: Toggle / Open Player", async () => {
-      const activeView = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
-      const activeFile = activeView?.file;
-      if (activeFile && this.settings.autoEmbedInNote) {
-        const source = this.detector.extractMediaFromNote(activeFile, this.settings.mediaPropertyNames);
-        if (source) {
-          await this.embeddedManager.toggleActiveView();
-          return;
-        }
+      const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+      if (activeView) {
+        await this.embeddedManager.toggleActiveView();
+      } else {
+        new import_obsidian15.Notice("MediaScribe: Please open or focus a note to dock the player.");
       }
-      this.activateView();
     });
     this.registerPluginCommands();
     this.registerTimestampClickHandler();
@@ -4627,12 +4197,9 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
     );
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (view) {
           this.embeddedManager.syncView(view);
-        }
-        if (file instanceof import_obsidian16.TFile) {
-          this.checkAndSyncActiveNoteMedia(file);
         }
       })
     );
@@ -4641,7 +4208,7 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       this.app.metadataCache.on("changed", (file) => {
         if (metaDebounce !== null) window.clearTimeout(metaDebounce);
         metaDebounce = window.setTimeout(() => {
-          const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+          const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
           if (view && view.file?.path === file.path) {
             this.embeddedManager.syncView(view);
           }
@@ -4673,99 +4240,42 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
     this.embeddedManager.updateSettings(this.settings);
   }
   /**
-   * Retrieves whichever player is active (embedded in current note, or in sidebar)
+   * Cleans up saved panel conditions and playback positions older than autoClearHistoryDays
    */
-  getActivePlayer() {
-    const embedded = this.embeddedManager.getActiveEmbeddedPlayer();
-    if (embedded) return embedded;
-    return this.getActivePlayerView()?.getActivePlayer() || null;
-  }
-  /**
-   * Finds the active MediaScribeView leaf
-   */
-  getActivePlayerView() {
-    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_MEDIASCREIBE);
-    for (const leaf of leaves) {
-      if (leaf.view instanceof MediaScribeView) {
-        return leaf.view;
-      }
-    }
-    return null;
-  }
-  /**
-   * Activates or opens the MediaScribe view in workspace
-   */
-  async activateView(mediaSource) {
-    const { workspace } = this.app;
-    let leaf = null;
-    const existing = workspace.getLeavesOfType(VIEW_TYPE_MEDIASCREIBE);
-    if (existing.length > 0) {
-      leaf = existing[0];
-    } else {
-      if (this.settings.defaultLayout === "split_horizontal") {
-        leaf = workspace.getLeaf("split", "horizontal");
-      } else if (this.settings.defaultLayout === "split_vertical") {
-        leaf = workspace.getLeaf("split", "vertical");
-      } else {
-        leaf = workspace.getRightLeaf(false);
-      }
-      await leaf?.setViewState({ type: VIEW_TYPE_MEDIASCREIBE, active: true });
-    }
-    if (leaf) {
-      workspace.revealLeaf(leaf);
-      const view = leaf.view;
-      if (mediaSource) {
-        await view.loadMedia(mediaSource);
-      }
-      return view;
-    }
-    throw new Error("Could not create MediaScribe leaf.");
-  }
-  /**
-   * Activates the MediaScribe player in the right sidebar
-   */
-  async activateSidebarView(mediaSource, startTime = 0, wasPlaying = false, returnPos = "top", originNotePath) {
-    const { workspace } = this.app;
-    let leaf = null;
-    const existing = workspace.getLeavesOfType(VIEW_TYPE_MEDIASCREIBE);
-    for (const l of existing) {
-      if (l.getRoot() === workspace.rightSplit) {
-        leaf = l;
-        break;
-      }
-    }
-    if (!leaf) {
-      leaf = workspace.getRightLeaf(false);
-      await leaf?.setViewState({ type: VIEW_TYPE_MEDIASCREIBE, active: true });
-    }
-    if (leaf) {
-      workspace.revealLeaf(leaf);
-      const view = leaf.view;
-      if (originNotePath) {
-        view.setOriginNotePath(originNotePath);
-      }
-      if (returnPos) {
-        view.setReturnPosition(returnPos);
-      }
-      if (mediaSource) {
-        await view.loadMedia(mediaSource, true);
-        const player = view.getActivePlayer();
-        if (player) {
-          if (startTime > 0) player.seekTo(startTime);
-          if (wasPlaying) player.play();
+  cleanExpiredHistory() {
+    const days = this.settings.autoClearHistoryDays;
+    if (!days || days <= 0) return;
+    const maxAgeMs = days * 24 * 60 * 60 * 1e3;
+    const now = Date.now();
+    let changed = false;
+    if (this.settings.storedSidePanelStates) {
+      for (const key of Object.keys(this.settings.storedSidePanelStates)) {
+        const item = this.settings.storedSidePanelStates[key];
+        if (item && item.lastAccessed && now - item.lastAccessed > maxAgeMs) {
+          delete this.settings.storedSidePanelStates[key];
+          changed = true;
         }
       }
-      return view;
     }
-    throw new Error("Could not create MediaScribe sidebar leaf.");
+    if (this.settings.storedPlaybackLastAccessed && this.settings.storedPlaybackPositions) {
+      for (const url of Object.keys(this.settings.storedPlaybackLastAccessed)) {
+        const lastAccess = this.settings.storedPlaybackLastAccessed[url];
+        if (now - lastAccess > maxAgeMs) {
+          delete this.settings.storedPlaybackLastAccessed[url];
+          delete this.settings.storedPlaybackPositions[url];
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      this.saveSettings();
+    }
   }
-  async checkAndSyncActiveNoteMedia(file) {
-    const playerView = this.getActivePlayerView();
-    if (!playerView) return;
-    const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames);
-    if (source && (!playerView.getCurrentSource() || playerView.getCurrentSource()?.url !== source.url)) {
-      await playerView.loadMedia(source);
-    }
+  /**
+   * Retrieves whichever player is active embedded in current note
+   */
+  getActivePlayer() {
+    return this.embeddedManager.getActiveEmbeddedPlayer();
   }
   registerPluginCommands() {
     this.addCommand({
@@ -4773,9 +4283,9 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       name: "Toggle / Reopen media player for active note",
       hotkeys: [{ modifiers: ["Mod", "Shift"], key: "m" }],
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (view && view.file) {
-          const source = this.detector.extractMediaFromNote(view.file, this.settings.mediaPropertyNames);
+          const source = this.detector.extractMediaFromNote(view.file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
           if (source) {
             if (!checking) {
               this.embeddedManager.toggleActiveView();
@@ -4793,16 +4303,14 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
         const file = this.app.workspace.getActiveFile();
         if (file) {
           if (!checking) {
-            const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames);
+            const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
             if (source) {
-              const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+              const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
               if (view) {
                 this.embeddedManager.reopenView(view);
-              } else {
-                this.activateView(source);
               }
             } else {
-              new import_obsidian16.Notice("MediaScribe: No media property found in note frontmatter (e.g. media_link).");
+              new import_obsidian15.Notice("MediaScribe: No media property found in note frontmatter (e.g. media_link).");
             }
           }
           return true;
@@ -4818,14 +4326,14 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
         if (input && input.trim()) {
           const source = this.detector.resolveSource(input.trim());
           if (source) {
-            const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
-            if (this.settings.autoEmbedInNote && view) {
-              this.embeddedManager.syncView(view);
+            const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+            if (view) {
+              this.embeddedManager.mountWithPosition(view, this.settings.embeddedPosition || "top", 0, true, source);
             } else {
-              this.activateView(source);
+              new import_obsidian15.Notice("MediaScribe: Please open or focus a note in the editor to mount media.");
             }
           } else {
-            new import_obsidian16.Notice("MediaScribe: Invalid or unsupported media source.");
+            new import_obsidian15.Notice("MediaScribe: Invalid or unsupported media source.");
           }
         }
       }
@@ -4866,7 +4374,7 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
         if (player?.nextVideo) {
           player.nextVideo();
         } else {
-          new import_obsidian16.Notice("MediaScribe: Next video control not available.");
+          new import_obsidian15.Notice("MediaScribe: Next video control not available.");
         }
       }
     });
@@ -4879,7 +4387,7 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
         if (player?.previousVideo) {
           player.previousVideo();
         } else {
-          new import_obsidian16.Notice("MediaScribe: Previous video control not available.");
+          new import_obsidian15.Notice("MediaScribe: Previous video control not available.");
         }
       }
     });
@@ -4888,7 +4396,7 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       name: "Insert current timestamp into note",
       hotkeys: [{ modifiers: ["Mod"], key: "i" }],
       editorCallback: () => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         this.timestampService.insertCurrentTimestamp(view);
       }
     });
@@ -4900,10 +4408,9 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
         const embedded = this.embeddedManager.getActiveEmbeddedWidget();
         if (embedded) {
           embedded.captureScreenshot();
-          return;
+        } else {
+          new import_obsidian15.Notice("MediaScribe: No active media player found to capture screenshot.");
         }
-        const view = this.getActivePlayerView();
-        view?.captureScreenshot();
       }
     });
     this.addCommand({
@@ -4982,15 +4489,15 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
     if (player) {
       player.seekTo(seconds);
       player.play();
-      new import_obsidian16.Notice(`MediaScribe: Jumped to ${formatSeconds(seconds)}`);
+      new import_obsidian15.Notice(`MediaScribe: Jumped to ${formatSeconds(seconds)}`);
       return true;
     }
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
     if (activeView && activeView.file) {
-      const source = this.detector.extractMediaFromNote(activeView.file, this.settings.mediaPropertyNames);
+      const source = this.detector.extractMediaFromNote(activeView.file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
       if (source) {
         this.embeddedManager.reopenView(activeView, seconds);
-        new import_obsidian16.Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
+        new import_obsidian15.Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
         return true;
       }
     }

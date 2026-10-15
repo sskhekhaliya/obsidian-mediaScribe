@@ -183,7 +183,25 @@ export class TranscriptPanel {
 
     if (this.autoScroll && this.activeIndex >= 0 && rows[this.activeIndex]) {
       const activeEl = rows[this.activeIndex] as HTMLElement;
-      activeEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      this.scrollItemWithOffset(activeEl, this.listEl, 70, 30);
+    }
+  }
+
+  private scrollItemWithOffset(
+    itemEl: HTMLElement,
+    containerEl: HTMLElement,
+    bottomOffset: number = 70,
+    topOffset: number = 30
+  ): void {
+    const itemRect = itemEl.getBoundingClientRect();
+    const containerRect = containerEl.getBoundingClientRect();
+
+    if (itemRect.bottom > containerRect.bottom - bottomOffset) {
+      const diff = itemRect.bottom - (containerRect.bottom - bottomOffset);
+      containerEl.scrollBy({ top: diff, behavior: "smooth" });
+    } else if (itemRect.top < containerRect.top + topOffset) {
+      const diff = itemRect.top - (containerRect.top + topOffset);
+      containerEl.scrollBy({ top: diff, behavior: "smooth" });
     }
   }
 

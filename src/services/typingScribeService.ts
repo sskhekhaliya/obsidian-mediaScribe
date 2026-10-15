@@ -7,6 +7,8 @@ export class TypingScribeService {
   private isEnabled: boolean = false;
   private wasPlayingBeforeTyping: boolean = false;
   private resumeTimeout: number | null = null;
+  private pendingKeystrokes: number = 0;
+  private charResetTimeout: number | null = null;
 
   constructor(_app: App, settings: MediaScribeSettings) {
     this.settings = settings;
@@ -41,25 +43,56 @@ export class TypingScribeService {
       return;
     }
 
-    // If currently playing, pause and remember state
-    if (this.player.isPlaying) {
-      this.wasPlayingBeforeTyping = true;
-      this.player.pause();
+    const threshold = Math.max(1, this.settings.autoPauseCharThreshold ?? 3);
+
+    // If playback was already paused due to typing, keep refreshing the auto-resume timer
+    if (this.wasPlayingBeforeTyping) {
+      this.scheduleResume();
+      return;
     }
 
-    // Reset resume timer
+    // Only initiate typing pause if the video is currently playing
+    if (!this.player.isPlaying) {
+      return;
+    }
+
+    // Increment keystrokes in the current typing burst
+    this.pendingKeystrokes++;
+
+    // Clear any previous character reset timer
+    if (this.charResetTimeout !== null) {
+      window.clearTimeout(this.charResetTimeout);
+      this.charResetTimeout = null;
+    }
+
+    // If threshold reached, pause playback!
+    if (this.pendingKeystrokes >= threshold) {
+      this.wasPlayingBeforeTyping = true;
+      this.player.pause();
+      this.pendingKeystrokes = 0;
+      this.scheduleResume();
+    } else {
+      // Threshold not yet reached (e.g. user just typed a single comma).
+      // If no further typing occurs within 1.5 seconds, reset pending count without interrupting video.
+      this.charResetTimeout = window.setTimeout(() => {
+        this.pendingKeystrokes = 0;
+        this.charResetTimeout = null;
+      }, 1500);
+    }
+  }
+
+  private scheduleResume(): void {
     if (this.resumeTimeout !== null) {
       window.clearTimeout(this.resumeTimeout);
       this.resumeTimeout = null;
     }
 
-    // Schedule auto-resume if it was playing
-    if (this.wasPlayingBeforeTyping) {
-      const idleMs = Math.max(500, this.settings.autoPauseIdleResumeSec * 1000);
-      this.resumeTimeout = window.setTimeout(async () => {
-        if (!this.player || !this.isEnabled) return;
+    const idleMs = Math.max(500, this.settings.autoPauseIdleResumeSec * 1000);
+    this.resumeTimeout = window.setTimeout(async () => {
+      if (!this.player || !this.isEnabled) return;
 
-        // Rewind slightly
+      if (this.wasPlayingBeforeTyping) {
+        // Rewind slightly to preserve context
         if (this.settings.autoResumeRewindSec > 0) {
           const currentTime = await this.player.getCurrentTime();
           this.player.seekTo(Math.max(0, currentTime - this.settings.autoResumeRewindSec));
@@ -67,15 +100,21 @@ export class TypingScribeService {
 
         await this.player.play();
         this.wasPlayingBeforeTyping = false;
-        this.resumeTimeout = null;
-      }, idleMs);
-    }
+      }
+
+      this.pendingKeystrokes = 0;
+      this.resumeTimeout = null;
+    }, idleMs);
   }
 
   public destroy(): void {
     if (this.resumeTimeout !== null) {
       window.clearTimeout(this.resumeTimeout);
       this.resumeTimeout = null;
+    }
+    if (this.charResetTimeout !== null) {
+      window.clearTimeout(this.charResetTimeout);
+      this.charResetTimeout = null;
     }
   }
 }

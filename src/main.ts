@@ -7,7 +7,6 @@ import { TimestampService } from "./services/timestampService";
 import { TypingScribeService } from "./services/typingScribeService";
 import { TranscriptService } from "./services/transcriptService";
 import { EmbeddedPlayerManager } from "./services/embeddedPlayerManager";
-import { MediaScribeView, VIEW_TYPE_MEDIASCREIBE } from "./ui/MediaScribeView";
 import { extractTimestampsFromText, formatSeconds, parseTimestamp } from "./utils/time";
 
 export default class MediaScribePlugin extends Plugin {
@@ -21,6 +20,7 @@ export default class MediaScribePlugin extends Plugin {
 
   public async onload(): Promise<void> {
     await this.loadSettings();
+    this.cleanExpiredHistory();
 
     // Initialize Services
     this.detector = new MediaDetector(this.app);
@@ -31,7 +31,8 @@ export default class MediaScribePlugin extends Plugin {
     this.timestampService = new TimestampService(
       this.app,
       this.settings,
-      () => this.getActivePlayer()
+      () => this.getActivePlayer(),
+      () => this.embeddedManager?.getActiveSource() || null
     );
 
     this.embeddedManager = new EmbeddedPlayerManager(
@@ -49,37 +50,14 @@ export default class MediaScribePlugin extends Plugin {
       }
     );
 
-    // Register View
-    this.registerView(
-      VIEW_TYPE_MEDIASCREIBE,
-      (leaf) =>
-        new MediaScribeView(
-          leaf,
-          this,
-          this.settings,
-          this.screenshotService,
-          this.timestampService,
-          this.typingScribeService,
-          this.transcriptService,
-          async (newSettings) => {
-            this.settings = newSettings;
-            await this.saveSettings();
-          }
-        )
-    );
-
     // Register Ribbon Icon
     this.addRibbonIcon("play-circle", "MediaScribe: Toggle / Open Player", async () => {
       const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-      const activeFile = activeView?.file;
-      if (activeFile && this.settings.autoEmbedInNote) {
-        const source = this.detector.extractMediaFromNote(activeFile, this.settings.mediaPropertyNames);
-        if (source) {
-          await this.embeddedManager.toggleActiveView();
-          return;
-        }
+      if (activeView) {
+        await this.embeddedManager.toggleActiveView();
+      } else {
+        new Notice("MediaScribe: Please open or focus a note to dock the player.");
       }
-      this.activateView();
     });
 
     // Register Commands
@@ -104,9 +82,6 @@ export default class MediaScribePlugin extends Plugin {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (view) {
           this.embeddedManager.syncView(view);
-        }
-        if (file instanceof TFile) {
-          this.checkAndSyncActiveNoteMedia(file);
         }
       })
     );
@@ -159,119 +134,49 @@ export default class MediaScribePlugin extends Plugin {
   }
 
   /**
-   * Retrieves whichever player is active (embedded in current note, or in sidebar)
+   * Cleans up saved panel conditions and playback positions older than autoClearHistoryDays
    */
-  public getActivePlayer(): IMediaPlayer | null {
-    const embedded = this.embeddedManager.getActiveEmbeddedPlayer();
-    if (embedded) return embedded;
-    return this.getActivePlayerView()?.getActivePlayer() || null;
-  }
+  public cleanExpiredHistory(): void {
+    const days = this.settings.autoClearHistoryDays;
+    if (!days || days <= 0) return;
 
-  /**
-   * Finds the active MediaScribeView leaf
-   */
-  public getActivePlayerView(): MediaScribeView | null {
-    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_MEDIASCREIBE);
-    for (const leaf of leaves) {
-      if (leaf.view instanceof MediaScribeView) {
-        return leaf.view;
-      }
-    }
-    return null;
-  }
+    const maxAgeMs = days * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    let changed = false;
 
-  /**
-   * Activates or opens the MediaScribe view in workspace
-   */
-  public async activateView(mediaSource?: MediaSourceInfo): Promise<MediaScribeView> {
-    const { workspace } = this.app;
-    let leaf: WorkspaceLeaf | null = null;
-    const existing = workspace.getLeavesOfType(VIEW_TYPE_MEDIASCREIBE);
-
-    if (existing.length > 0) {
-      leaf = existing[0];
-    } else {
-      if (this.settings.defaultLayout === "split_horizontal") {
-        leaf = workspace.getLeaf("split", "horizontal");
-      } else if (this.settings.defaultLayout === "split_vertical") {
-        leaf = workspace.getLeaf("split", "vertical");
-      } else {
-        leaf = workspace.getRightLeaf(false);
-      }
-      await leaf?.setViewState({ type: VIEW_TYPE_MEDIASCREIBE, active: true });
-    }
-
-    if (leaf) {
-      workspace.revealLeaf(leaf);
-      const view = leaf.view as MediaScribeView;
-      if (mediaSource) {
-        await view.loadMedia(mediaSource);
-      }
-      return view;
-    }
-
-    throw new Error("Could not create MediaScribe leaf.");
-  }
-
-  /**
-   * Activates the MediaScribe player in the right sidebar
-   */
-  public async activateSidebarView(
-    mediaSource?: MediaSourceInfo,
-    startTime: number = 0,
-    wasPlaying: boolean = false,
-    returnPos: "top" | "vertical_right" | "vertical_left" = "top",
-    originNotePath?: string
-  ): Promise<MediaScribeView> {
-    const { workspace } = this.app;
-    let leaf: WorkspaceLeaf | null = null;
-    const existing = workspace.getLeavesOfType(VIEW_TYPE_MEDIASCREIBE);
-
-    for (const l of existing) {
-      if (l.getRoot() === workspace.rightSplit) {
-        leaf = l;
-        break;
-      }
-    }
-
-    if (!leaf) {
-      leaf = workspace.getRightLeaf(false);
-      await leaf?.setViewState({ type: VIEW_TYPE_MEDIASCREIBE, active: true });
-    }
-
-    if (leaf) {
-      workspace.revealLeaf(leaf);
-      const view = leaf.view as MediaScribeView;
-      if (originNotePath) {
-        view.setOriginNotePath(originNotePath);
-      }
-      if (returnPos) {
-        view.setReturnPosition(returnPos);
-      }
-      if (mediaSource) {
-        await view.loadMedia(mediaSource, true);
-        const player = view.getActivePlayer();
-        if (player) {
-          if (startTime > 0) player.seekTo(startTime);
-          if (wasPlaying) player.play();
+    // 1. Clean side panel states
+    if (this.settings.storedSidePanelStates) {
+      for (const key of Object.keys(this.settings.storedSidePanelStates)) {
+        const item = this.settings.storedSidePanelStates[key];
+        if (item && item.lastAccessed && (now - item.lastAccessed > maxAgeMs)) {
+          delete this.settings.storedSidePanelStates[key];
+          changed = true;
         }
       }
-      return view;
     }
 
-    throw new Error("Could not create MediaScribe sidebar leaf.");
+    // 2. Clean playback positions
+    if (this.settings.storedPlaybackLastAccessed && this.settings.storedPlaybackPositions) {
+      for (const url of Object.keys(this.settings.storedPlaybackLastAccessed)) {
+        const lastAccess = this.settings.storedPlaybackLastAccessed[url];
+        if (now - lastAccess > maxAgeMs) {
+          delete this.settings.storedPlaybackLastAccessed[url];
+          delete this.settings.storedPlaybackPositions[url];
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      this.saveSettings();
+    }
   }
 
-
-
-  private async checkAndSyncActiveNoteMedia(file: TFile): Promise<void> {
-    const playerView = this.getActivePlayerView();
-    if (!playerView) return;
-
-    const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames);
-    if (source && (!playerView.getCurrentSource() || playerView.getCurrentSource()?.url !== source.url)) {
-      await playerView.loadMedia(source);
-    }
+  /**
+   * Retrieves whichever player is active embedded in current note
+   */
+  public getActivePlayer(): IMediaPlayer | null {
+    return this.embeddedManager.getActiveEmbeddedPlayer();
   }
 
   private registerPluginCommands(): void {
@@ -283,7 +188,7 @@ export default class MediaScribePlugin extends Plugin {
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (view && view.file) {
-          const source = this.detector.extractMediaFromNote(view.file, this.settings.mediaPropertyNames);
+          const source = this.detector.extractMediaFromNote(view.file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
           if (source) {
             if (!checking) {
               this.embeddedManager.toggleActiveView();
@@ -295,7 +200,7 @@ export default class MediaScribePlugin extends Plugin {
       }
     });
 
-    // 1. Open Media for Active Note (Embed or Sidebar)
+    // 1. Open Media for Active Note
     this.addCommand({
       id: "mediascribe-open-active-note-media",
       name: "Open media for active note",
@@ -303,13 +208,11 @@ export default class MediaScribePlugin extends Plugin {
         const file = this.app.workspace.getActiveFile();
         if (file) {
           if (!checking) {
-            const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames);
+            const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
             if (source) {
               const view = this.app.workspace.getActiveViewOfType(MarkdownView);
               if (view) {
                 this.embeddedManager.reopenView(view);
-              } else {
-                this.activateView(source);
               }
             } else {
               new Notice("MediaScribe: No media property found in note frontmatter (e.g. media_link).");
@@ -331,10 +234,10 @@ export default class MediaScribePlugin extends Plugin {
           const source = this.detector.resolveSource(input.trim());
           if (source) {
             const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-            if (this.settings.autoEmbedInNote && view) {
-              this.embeddedManager.syncView(view);
+            if (view) {
+              this.embeddedManager.mountWithPosition(view, this.settings.embeddedPosition || "top", 0, true, source);
             } else {
-              this.activateView(source);
+              new Notice("MediaScribe: Please open or focus a note in the editor to mount media.");
             }
           } else {
             new Notice("MediaScribe: Invalid or unsupported media source.");
@@ -426,10 +329,9 @@ export default class MediaScribePlugin extends Plugin {
         const embedded = this.embeddedManager.getActiveEmbeddedWidget();
         if (embedded) {
           embedded.captureScreenshot();
-          return;
+        } else {
+          new Notice("MediaScribe: No active media player found to capture screenshot.");
         }
-        const view = this.getActivePlayerView();
-        view?.captureScreenshot();
       }
     });
 
@@ -534,7 +436,7 @@ export default class MediaScribePlugin extends Plugin {
     // If player was closed, reopen it for the active note!
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView && activeView.file) {
-      const source = this.detector.extractMediaFromNote(activeView.file, this.settings.mediaPropertyNames);
+      const source = this.detector.extractMediaFromNote(activeView.file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
       if (source) {
         this.embeddedManager.reopenView(activeView, seconds);
         new Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);

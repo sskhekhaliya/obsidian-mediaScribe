@@ -22,6 +22,10 @@ export function cacheYouTubeTitle(videoId: string, title: string): void {
   }
 }
 
+export function getCachedYouTubeTitle(videoId: string): string | null {
+  return titleCache.get(videoId) || null;
+}
+
 /**
  * Fetches real YouTube video title via YouTube's public oEmbed API (no API key required)
  */
@@ -163,16 +167,18 @@ export async function fetchYouTubePlaylistItems(playlistId: string): Promise<Pla
                 seenIds.add(v.videoId);
                 const title = v.title?.runs?.[0]?.text || v.title?.simpleText || "Unknown Video";
                 titleCache.set(v.videoId, title);
+                const itemIdx = seenIds.size - 1;
                 items.push({
                   title,
                   duration: v.lengthText?.simpleText || "",
                   videoId: v.videoId,
                   source: {
                     type: "youtube",
-                    url: `https://www.youtube.com/watch?v=${v.videoId}&list=${playlistId}`,
-                    originalInput: `https://www.youtube.com/watch?v=${v.videoId}&list=${playlistId}`,
+                    url: `https://www.youtube.com/watch?v=${v.videoId}&list=${playlistId}&index=${itemIdx + 1}`,
+                    originalInput: `https://www.youtube.com/watch?v=${v.videoId}&list=${playlistId}&index=${itemIdx + 1}`,
                     videoId: v.videoId,
                     playlistId,
+                    playlistIndex: itemIdx,
                     isPlaylist: true,
                     isLocal: false,
                     title
@@ -188,16 +194,18 @@ export async function fetchYouTubePlaylistItems(playlistId: string): Promise<Pla
                   v.rendererContext?.accessibilityContext?.label?.split(/\s+\d+\s+(?:minutes?|seconds?|hours?)/)[0] ||
                   "Unknown Video";
                 titleCache.set(vId, title);
+                const itemIdx = seenIds.size - 1;
                 items.push({
                   title,
                   duration: "",
                   videoId: vId,
                   source: {
                     type: "youtube",
-                    url: `https://www.youtube.com/watch?v=${vId}&list=${playlistId}`,
-                    originalInput: `https://www.youtube.com/watch?v=${vId}&list=${playlistId}`,
+                    url: `https://www.youtube.com/watch?v=${vId}&list=${playlistId}&index=${itemIdx + 1}`,
+                    originalInput: `https://www.youtube.com/watch?v=${vId}&list=${playlistId}&index=${itemIdx + 1}`,
                     videoId: vId,
                     playlistId,
+                    playlistIndex: itemIdx,
                     isPlaylist: true,
                     isLocal: false,
                     title

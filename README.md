@@ -55,6 +55,8 @@
 
 ### 4. 📑 Course & YouTube Playlist Support
 - **YouTube Playlists:** Paste any playlist link (`https://www.youtube.com/playlist?list=...` or video with `&list=...`). MediaScribe displays previous/next controls, title info, and a playlist badge (`Part 3/45`).
+- **Seamless Position Memory:** Navigating with Next/Previous buttons or picking any item in the playlist drawer remembers each individual video's playback point and resumes right where you left off.
+- **Create Note for Video:** Right-click any video in the playlist drawer to instantly create a dedicated note configured with your preferred frontmatter property and target folder.
 - **Multi-Part Local Courses:** Define structured series right inside your note frontmatter:
   ```yaml
   ---
@@ -64,7 +66,7 @@
     - "[[03 - Advanced Architecture.mp4]]"
   ---
   ```
-- **Playlist Drawer (`📑`):** Expand the built-in drawer to preview all parts and switch videos instantly.
+- **Playlist Drawer (`📑`):** Expand the built-in drawer to preview all parts with durations, active highlight, auto-scroll, and switch videos instantly.
 
 ### 5. 📸 One-Key Frame Screenshots
 - Press `Ctrl+Shift+S` (or `Cmd+Shift+S`) at any point during playback.
@@ -73,6 +75,7 @@
 ### 6. ✍️ Typing Scribe (Smart Auto-Pause & Resume)
 - Take comprehensive notes without touching pause buttons.
 - Media playback automatically pauses as soon as you type in your note.
+- **Pause Trigger Threshold:** Configurable character threshold (e.g. 3 characters) so minor edits like commas or punctuation don't trigger unwanted pauses.
 - Once you stop typing for a couple seconds, it gently rewinds (e.g. 1.5s) to preserve your train of thought and resumes playback automatically.
 
 ### 7. 📜 Interactive Transcripts & Subtitles
@@ -148,6 +151,9 @@ media_link:
 ## ⚙️ Configuration & Settings
 
 - **Default Layout:** Top Horizontal, Vertical Split Left, Vertical Split Right, or Right Sidebar.
+- **Playlist Note Creation:** Customize the frontmatter property key (default: `video_link`) and target folder (current note folder or specific folder with auto-suggest).
+- **Auto-Clear Inactive History:** Automatically purge stored playback positions and panel states older than X days.
+- **Typing Scribe Buffers:** Configure character trigger threshold (e.g. 3 chars), idle resume delay (1–10s), and auto-rewind seconds (0–5s).
 - **Timestamp Format:** 
   - Bracket Link: `[01:23](#t=83)` *(interactive seeking)*
   - Wikilink: `[[#t=83|01:23]]`
@@ -155,7 +161,6 @@ media_link:
   - Plain: `01:23`
 - **Jump Step Seconds:** Set your preferred forward and backward jump intervals (1–60s).
 - **Screenshot Settings:** Choose PNG or JPEG, custom subfolder paths, or vault default attachment folders.
-- **Typing Scribe Buffers:** Configure idle pause duration (1–10s) and auto-rewind seconds (0–5s).
 - **Custom Frontmatter Keys:** Customize recognized YAML property keys (default: `media_link`, `media`, `video`, `audio`, `podcast`).
 
 ---

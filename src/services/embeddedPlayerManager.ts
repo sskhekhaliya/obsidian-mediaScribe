@@ -76,6 +76,10 @@ export class EmbeddedPlayerManager {
     return null;
   }
 
+  public getActiveSource(): MediaSourceInfo | null {
+    return this.getActiveEmbeddedWidget()?.getCurrentSource() || null;
+  }
+
   /**
    * Inspects a MarkdownView and mounts or dismounts the embedded player
    */
@@ -95,7 +99,7 @@ export class EmbeddedPlayerManager {
       return;
     }
 
-    const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames);
+    const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
 
     if (source) {
       let widget = this.activeWidgets.get(view);
@@ -162,7 +166,7 @@ export class EmbeddedPlayerManager {
     this.settings.embeddedPosition = position;
     await this.onSettingsChange(this.settings);
 
-    const source = sourceToLoad || (file ? this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames) : null);
+    const source = sourceToLoad || (file ? this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty) : null);
     if (!source) {
       new Notice("MediaScribe: No media found to dock into note.");
       return;
