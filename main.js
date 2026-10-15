@@ -2459,11 +2459,9 @@ var MediaScribeEmbeddedWidget = class {
     this.currentAuthor = null;
     this.isLoadingDescription = false;
     // Side Panel Elements
+    this.playerAreaEl = null;
+    this.resizeHandleEl = null;
     this.sidePanelEl = null;
-    this.sidePanelTabsEl = null;
-    this.playlistTabBtn = null;
-    this.transcriptTabBtn = null;
-    this.descriptionTabBtn = null;
     this.playlistViewEl = null;
     this.transcriptViewEl = null;
     this.descriptionViewEl = null;
@@ -2509,6 +2507,22 @@ var MediaScribeEmbeddedWidget = class {
       this.hostEl.style.removeProperty("--mediascribe-dock-width");
       contentEl.style.removeProperty("--mediascribe-dock-width");
       this.hostEl.style.setProperty("--mediascribe-embed-height", `${this.settings.embeddedPlayerHeight || 340}px`);
+    }
+    this.updateSidePanelPosition();
+  }
+  updateSidePanelPosition() {
+    if (!this.sidePanelEl) return;
+    const pos = this.settings.embeddedPosition || "top";
+    if (pos === "top") {
+      if (this.playerAreaEl && this.sidePanelEl.parentElement !== this.playerAreaEl) {
+        this.playerAreaEl.appendChild(this.sidePanelEl);
+      }
+    } else {
+      if (this.resizeHandleEl && this.sidePanelEl.nextSibling !== this.resizeHandleEl) {
+        this.hostEl.insertBefore(this.sidePanelEl, this.resizeHandleEl);
+      } else if (!this.resizeHandleEl && this.sidePanelEl.parentElement !== this.hostEl) {
+        this.hostEl.appendChild(this.sidePanelEl);
+      }
     }
   }
   async setPosition(pos) {
@@ -2640,11 +2654,13 @@ var MediaScribeEmbeddedWidget = class {
     this.hostEl.empty();
     this.buildHeader(this.hostEl);
     const playerArea = this.hostEl.createDiv({ cls: "mediascribe-player-area" });
+    this.playerAreaEl = playerArea;
     this.playerContainerEl = playerArea.createDiv({ cls: "mediascribe-player-container" });
     this.buildSidePanel(playerArea);
     this.buildControls(this.hostEl);
     this.buildLoopBar(this.hostEl);
     this.buildResizeHandle(this.hostEl);
+    this.updateSidePanelPosition();
   }
   buildHeader(parentEl) {
     const header = parentEl.createDiv({ cls: "mediascribe-view-header mediascribe-embedded-header" });
@@ -2954,16 +2970,6 @@ var MediaScribeEmbeddedWidget = class {
   }
   buildSidePanel(parentEl) {
     this.sidePanelEl = parentEl.createDiv({ cls: "mediascribe-side-panel is-hidden" });
-    const headerEl = this.sidePanelEl.createDiv({ cls: "mediascribe-side-panel-header" });
-    this.sidePanelTabsEl = headerEl.createDiv({ cls: "mediascribe-side-panel-tabs" });
-    const closeBtn = headerEl.createEl("button", {
-      cls: "mediascribe-side-panel-close-btn",
-      attr: { title: "Close Side Panel" }
-    });
-    (0, import_obsidian13.setIcon)(closeBtn, "x");
-    closeBtn.addEventListener("click", () => {
-      this.closeSidePanel();
-    });
     const contentEl = this.sidePanelEl.createDiv({ cls: "mediascribe-side-panel-content" });
     this.playlistViewEl = contentEl.createDiv({ cls: "mediascribe-side-view mediascribe-playlist-view" });
     this.buildPlaylistDrawer(this.playlistViewEl);
@@ -2973,7 +2979,6 @@ var MediaScribeEmbeddedWidget = class {
     this.descriptionViewEl = contentEl.createDiv({ cls: "mediascribe-side-view mediascribe-description-view is-hidden" });
     this.descriptionViewEl.style.display = "none";
     this.renderDescriptionView();
-    this.updateSidePanelTabs();
   }
   openSideTab(tab) {
     this.activeSideTab = tab;
@@ -2988,7 +2993,6 @@ var MediaScribeEmbeddedWidget = class {
     if (this.playlistViewEl) this.playlistViewEl.style.display = tab === "playlist" ? "flex" : "none";
     if (this.transcriptViewEl) this.transcriptViewEl.style.display = tab === "transcript" ? "flex" : "none";
     if (this.descriptionViewEl) this.descriptionViewEl.style.display = tab === "description" ? "flex" : "none";
-    this.updateSidePanelTabs();
     this.playlistToggleBtn?.toggleClass("is-active", tab === "playlist");
     this.transcriptBtn?.toggleClass("is-active", tab === "transcript");
     this.descriptionBtn?.toggleClass("is-active", tab === "description");
@@ -3018,27 +3022,6 @@ var MediaScribeEmbeddedWidget = class {
     }
   }
   updateSidePanelTabs() {
-    if (!this.sidePanelTabsEl) return;
-    this.sidePanelTabsEl.empty();
-    const count = this.currentSource?.playlistItems?.length || 0;
-    const hasPlaylist = count > 1 || this.currentSource?.playlistItems && this.currentSource.playlistItems.length > 0;
-    if (hasPlaylist) {
-      this.playlistTabBtn = this.sidePanelTabsEl.createEl("button", {
-        cls: `mediascribe-side-tab-btn ${this.activeSideTab === "playlist" ? "is-active" : ""}`,
-        text: `Playlist (${this.playlistIndex + 1}/${count})`
-      });
-      this.playlistTabBtn.addEventListener("click", () => this.openSideTab("playlist"));
-    }
-    this.transcriptTabBtn = this.sidePanelTabsEl.createEl("button", {
-      cls: `mediascribe-side-tab-btn ${this.activeSideTab === "transcript" ? "is-active" : ""}`,
-      text: "Captions"
-    });
-    this.transcriptTabBtn.addEventListener("click", () => this.openSideTab("transcript"));
-    this.descriptionTabBtn = this.sidePanelTabsEl.createEl("button", {
-      cls: `mediascribe-side-tab-btn ${this.activeSideTab === "description" ? "is-active" : ""}`,
-      text: "Description"
-    });
-    this.descriptionTabBtn.addEventListener("click", () => this.openSideTab("description"));
   }
   async fetchAndSetDescription(videoId) {
     if (!videoId) return;
@@ -3461,6 +3444,7 @@ var MediaScribeEmbeddedWidget = class {
   }
   buildResizeHandle(parentEl) {
     const handle = parentEl.createDiv({ cls: "mediascribe-resize-handle" });
+    this.resizeHandleEl = handle;
     let isDragging = false;
     let startY = 0;
     let startX = 0;
@@ -3758,6 +3742,7 @@ var MediaScribeView = class extends import_obsidian15.ItemView {
     this.progressSlider = null;
     this.timelineMarkers = null;
     this.transcriptPanel = null;
+    this.transcriptBtn = null;
     this.descriptionViewEl = null;
     this.descriptionBtn = null;
     this.loopBarEl = null;
@@ -4256,15 +4241,13 @@ var MediaScribeView = class extends import_obsidian15.ItemView {
     });
     (0, import_obsidian15.setIcon)(snapBtn, "camera");
     snapBtn.addEventListener("click", () => this.captureScreenshot());
-    const transcriptBtn = rightControls.createEl("button", {
+    this.transcriptBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn mediascribe-cc-btn",
       attr: { title: "Toggle Subtitles / Transcript Panel" }
     });
-    (0, import_obsidian15.setIcon)(transcriptBtn, "subtitles");
-    transcriptBtn.addEventListener("click", () => {
-      this.isTranscriptVisible = !this.isTranscriptVisible;
-      transcriptBtn.toggleClass("is-active", this.isTranscriptVisible);
-      this.transcriptPanel?.setVisible(this.isTranscriptVisible);
+    (0, import_obsidian15.setIcon)(this.transcriptBtn, "subtitles");
+    this.transcriptBtn.addEventListener("click", () => {
+      this.toggleTranscript();
     });
     this.descriptionBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn",
@@ -4272,12 +4255,7 @@ var MediaScribeView = class extends import_obsidian15.ItemView {
     });
     (0, import_obsidian15.setIcon)(this.descriptionBtn, "file-text");
     this.descriptionBtn.addEventListener("click", () => {
-      this.isDescriptionVisible = !this.isDescriptionVisible;
-      this.descriptionBtn?.toggleClass("is-active", this.isDescriptionVisible);
-      this.descriptionViewEl?.toggleClass("is-hidden", !this.isDescriptionVisible);
-      if (this.isDescriptionVisible) {
-        this.renderDescriptionView();
-      }
+      this.toggleDescription();
     });
     const loopBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn",
@@ -4289,6 +4267,39 @@ var MediaScribeView = class extends import_obsidian15.ItemView {
       loopBtn.toggleClass("is-active", this.isLooping);
       this.loopBarEl?.toggleClass("is-hidden", !this.isLooping);
     });
+  }
+  toggleTranscript() {
+    if (this.isTranscriptVisible) {
+      this.isTranscriptVisible = false;
+      this.transcriptBtn?.removeClass("is-active");
+      this.transcriptPanel?.setVisible(false);
+    } else {
+      this.isTranscriptVisible = true;
+      this.transcriptBtn?.addClass("is-active");
+      this.transcriptPanel?.setVisible(true);
+      if (this.isDescriptionVisible) {
+        this.isDescriptionVisible = false;
+        this.descriptionBtn?.removeClass("is-active");
+        this.descriptionViewEl?.addClass("is-hidden");
+      }
+    }
+  }
+  toggleDescription() {
+    if (this.isDescriptionVisible) {
+      this.isDescriptionVisible = false;
+      this.descriptionBtn?.removeClass("is-active");
+      this.descriptionViewEl?.addClass("is-hidden");
+    } else {
+      this.isDescriptionVisible = true;
+      this.descriptionBtn?.addClass("is-active");
+      this.descriptionViewEl?.removeClass("is-hidden");
+      this.renderDescriptionView();
+      if (this.isTranscriptVisible) {
+        this.isTranscriptVisible = false;
+        this.transcriptBtn?.removeClass("is-active");
+        this.transcriptPanel?.setVisible(false);
+      }
+    }
   }
   buildLoopBar(parentEl) {
     this.loopBarEl = parentEl.createDiv({ cls: "mediascribe-loop-bar is-hidden" });

@@ -66,11 +66,9 @@ export class MediaScribeEmbeddedWidget {
   private isLoadingDescription: boolean = false;
 
   // Side Panel Elements
+  private playerAreaEl: HTMLElement | null = null;
+  private resizeHandleEl: HTMLElement | null = null;
   private sidePanelEl: HTMLElement | null = null;
-  private sidePanelTabsEl: HTMLElement | null = null;
-  private playlistTabBtn: HTMLElement | null = null;
-  private transcriptTabBtn: HTMLElement | null = null;
-  private descriptionTabBtn: HTMLElement | null = null;
   private playlistViewEl: HTMLElement | null = null;
   private transcriptViewEl: HTMLElement | null = null;
   private descriptionViewEl: HTMLElement | null = null;
@@ -138,6 +136,26 @@ export class MediaScribeEmbeddedWidget {
       this.hostEl.style.removeProperty("--mediascribe-dock-width");
       contentEl.style.removeProperty("--mediascribe-dock-width");
       this.hostEl.style.setProperty("--mediascribe-embed-height", `${this.settings.embeddedPlayerHeight || 340}px`);
+    }
+
+    this.updateSidePanelPosition();
+  }
+
+  private updateSidePanelPosition(): void {
+    if (!this.sidePanelEl) return;
+    const pos = this.settings.embeddedPosition || "top";
+    if (pos === "top") {
+      if (this.playerAreaEl && this.sidePanelEl.parentElement !== this.playerAreaEl) {
+        this.playerAreaEl.appendChild(this.sidePanelEl);
+      }
+    } else {
+      // In vertical note mode (vertical_left / vertical_right):
+      // Place side panel below all controls (before resize handle)
+      if (this.resizeHandleEl && this.sidePanelEl.nextSibling !== this.resizeHandleEl) {
+        this.hostEl.insertBefore(this.sidePanelEl, this.resizeHandleEl);
+      } else if (!this.resizeHandleEl && this.sidePanelEl.parentElement !== this.hostEl) {
+        this.hostEl.appendChild(this.sidePanelEl);
+      }
     }
   }
 
@@ -299,6 +317,7 @@ export class MediaScribeEmbeddedWidget {
 
     // 2. Player Viewport Area (Player Container + Side-by-Side Panel for Playlist & Captions)
     const playerArea = this.hostEl.createDiv({ cls: "mediascribe-player-area" });
+    this.playerAreaEl = playerArea;
     this.playerContainerEl = playerArea.createDiv({ cls: "mediascribe-player-container" });
     this.buildSidePanel(playerArea);
 
@@ -310,6 +329,9 @@ export class MediaScribeEmbeddedWidget {
 
     // 5. Draggable Resize Handle
     this.buildResizeHandle(this.hostEl);
+
+    // Ensure side panel is properly positioned (in playerArea for top, or below controls for vertical)
+    this.updateSidePanelPosition();
   }
 
   private buildHeader(parentEl: HTMLElement): void {
@@ -704,20 +726,7 @@ export class MediaScribeEmbeddedWidget {
   private buildSidePanel(parentEl: HTMLElement): void {
     this.sidePanelEl = parentEl.createDiv({ cls: "mediascribe-side-panel is-hidden" });
 
-    // Header: Tabs (Playlist vs Captions) + Close Button
-    const headerEl = this.sidePanelEl.createDiv({ cls: "mediascribe-side-panel-header" });
-    this.sidePanelTabsEl = headerEl.createDiv({ cls: "mediascribe-side-panel-tabs" });
-
-    const closeBtn = headerEl.createEl("button", {
-      cls: "mediascribe-side-panel-close-btn",
-      attr: { title: "Close Side Panel" }
-    });
-    setIcon(closeBtn, "x");
-    closeBtn.addEventListener("click", () => {
-      this.closeSidePanel();
-    });
-
-    // Content container
+    // Content container taking full space without any header or tab bar
     const contentEl = this.sidePanelEl.createDiv({ cls: "mediascribe-side-panel-content" });
 
     // 1. Playlist View
@@ -733,8 +742,6 @@ export class MediaScribeEmbeddedWidget {
     this.descriptionViewEl = contentEl.createDiv({ cls: "mediascribe-side-view mediascribe-description-view is-hidden" });
     this.descriptionViewEl.style.display = "none";
     this.renderDescriptionView();
-
-    this.updateSidePanelTabs();
   }
 
   public openSideTab(tab: "playlist" | "transcript" | "description"): void {
@@ -752,8 +759,6 @@ export class MediaScribeEmbeddedWidget {
     if (this.playlistViewEl) this.playlistViewEl.style.display = tab === "playlist" ? "flex" : "none";
     if (this.transcriptViewEl) this.transcriptViewEl.style.display = tab === "transcript" ? "flex" : "none";
     if (this.descriptionViewEl) this.descriptionViewEl.style.display = tab === "description" ? "flex" : "none";
-
-    this.updateSidePanelTabs();
 
     this.playlistToggleBtn?.toggleClass("is-active", tab === "playlist");
     this.transcriptBtn?.toggleClass("is-active", tab === "transcript");
@@ -788,31 +793,7 @@ export class MediaScribeEmbeddedWidget {
   }
 
   private updateSidePanelTabs(): void {
-    if (!this.sidePanelTabsEl) return;
-    this.sidePanelTabsEl.empty();
-
-    const count = this.currentSource?.playlistItems?.length || 0;
-    const hasPlaylist = count > 1 || (this.currentSource?.playlistItems && this.currentSource.playlistItems.length > 0);
-
-    if (hasPlaylist) {
-      this.playlistTabBtn = this.sidePanelTabsEl.createEl("button", {
-        cls: `mediascribe-side-tab-btn ${this.activeSideTab === "playlist" ? "is-active" : ""}`,
-        text: `Playlist (${this.playlistIndex + 1}/${count})`
-      });
-      this.playlistTabBtn.addEventListener("click", () => this.openSideTab("playlist"));
-    }
-
-    this.transcriptTabBtn = this.sidePanelTabsEl.createEl("button", {
-      cls: `mediascribe-side-tab-btn ${this.activeSideTab === "transcript" ? "is-active" : ""}`,
-      text: "Captions"
-    });
-    this.transcriptTabBtn.addEventListener("click", () => this.openSideTab("transcript"));
-
-    this.descriptionTabBtn = this.sidePanelTabsEl.createEl("button", {
-      cls: `mediascribe-side-tab-btn ${this.activeSideTab === "description" ? "is-active" : ""}`,
-      text: "Description"
-    });
-    this.descriptionTabBtn.addEventListener("click", () => this.openSideTab("description"));
+    // Tabs removed to maximize reading space; toggled directly from controls
   }
 
   private async fetchAndSetDescription(videoId: string): Promise<void> {
@@ -1313,6 +1294,7 @@ export class MediaScribeEmbeddedWidget {
 
   private buildResizeHandle(parentEl: HTMLElement): void {
     const handle = parentEl.createDiv({ cls: "mediascribe-resize-handle" });
+    this.resizeHandleEl = handle;
 
     let isDragging = false;
     let startY = 0;

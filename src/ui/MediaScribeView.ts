@@ -39,6 +39,7 @@ export class MediaScribeView extends ItemView {
   private progressSlider: HTMLInputElement | null = null;
   private timelineMarkers: TimelineMarkers | null = null;
   private transcriptPanel: TranscriptPanel | null = null;
+  private transcriptBtn: HTMLElement | null = null;
   private descriptionViewEl: HTMLElement | null = null;
   private descriptionBtn: HTMLElement | null = null;
   private loopBarEl: HTMLElement | null = null;
@@ -685,15 +686,13 @@ export class MediaScribeView extends ItemView {
     snapBtn.addEventListener("click", () => this.captureScreenshot());
 
     // Transcript Toggle (YouTube CC Style)
-    const transcriptBtn = rightControls.createEl("button", {
+    this.transcriptBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn mediascribe-cc-btn",
       attr: { title: "Toggle Subtitles / Transcript Panel" }
     });
-    setIcon(transcriptBtn, "subtitles");
-    transcriptBtn.addEventListener("click", () => {
-      this.isTranscriptVisible = !this.isTranscriptVisible;
-      transcriptBtn.toggleClass("is-active", this.isTranscriptVisible);
-      this.transcriptPanel?.setVisible(this.isTranscriptVisible);
+    setIcon(this.transcriptBtn, "subtitles");
+    this.transcriptBtn.addEventListener("click", () => {
+      this.toggleTranscript();
     });
 
     // Description Toggle Button
@@ -703,12 +702,7 @@ export class MediaScribeView extends ItemView {
     });
     setIcon(this.descriptionBtn, "file-text");
     this.descriptionBtn.addEventListener("click", () => {
-      this.isDescriptionVisible = !this.isDescriptionVisible;
-      this.descriptionBtn?.toggleClass("is-active", this.isDescriptionVisible);
-      this.descriptionViewEl?.toggleClass("is-hidden", !this.isDescriptionVisible);
-      if (this.isDescriptionVisible) {
-        this.renderDescriptionView();
-      }
+      this.toggleDescription();
     });
 
     // A-B Loop Toggle
@@ -722,6 +716,45 @@ export class MediaScribeView extends ItemView {
       loopBtn.toggleClass("is-active", this.isLooping);
       this.loopBarEl?.toggleClass("is-hidden", !this.isLooping);
     });
+  }
+
+  private toggleTranscript(): void {
+    if (this.isTranscriptVisible) {
+      this.isTranscriptVisible = false;
+      this.transcriptBtn?.removeClass("is-active");
+      this.transcriptPanel?.setVisible(false);
+    } else {
+      this.isTranscriptVisible = true;
+      this.transcriptBtn?.addClass("is-active");
+      this.transcriptPanel?.setVisible(true);
+
+      // Mutually exclusive: close description
+      if (this.isDescriptionVisible) {
+        this.isDescriptionVisible = false;
+        this.descriptionBtn?.removeClass("is-active");
+        this.descriptionViewEl?.addClass("is-hidden");
+      }
+    }
+  }
+
+  private toggleDescription(): void {
+    if (this.isDescriptionVisible) {
+      this.isDescriptionVisible = false;
+      this.descriptionBtn?.removeClass("is-active");
+      this.descriptionViewEl?.addClass("is-hidden");
+    } else {
+      this.isDescriptionVisible = true;
+      this.descriptionBtn?.addClass("is-active");
+      this.descriptionViewEl?.removeClass("is-hidden");
+      this.renderDescriptionView();
+
+      // Mutually exclusive: close transcript
+      if (this.isTranscriptVisible) {
+        this.isTranscriptVisible = false;
+        this.transcriptBtn?.removeClass("is-active");
+        this.transcriptPanel?.setVisible(false);
+      }
+    }
   }
 
   private buildLoopBar(parentEl: HTMLElement): void {

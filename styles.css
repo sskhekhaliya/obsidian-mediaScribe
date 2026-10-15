@@ -1079,10 +1079,21 @@
 
 .mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-side-panel {
   width: 100% !important;
-  height: 240px !important;
-  max-height: 240px !important;
+  max-width: 100% !important;
+  flex: 1 1 auto !important;
+  min-height: 260px !important;
+  max-height: none !important;
+  height: auto !important;
   border-left: none !important;
   border-top: 1px solid var(--background-modifier-border) !important;
+  animation: none !important;
+  margin: 0 !important;
+}
+
+.mediascribe-embedded-host.mediascribe-vertical-mode .mediascribe-side-panel-content {
+  width: 100% !important;
+  height: 100% !important;
+  flex: 1 1 auto !important;
 }
 
 /* Vertical Resize Handles */
@@ -1315,82 +1326,6 @@
   display: none !important;
 }
 
-.mediascribe-side-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
-  background: var(--background-primary-alt);
-  border-bottom: 1px solid var(--background-modifier-border);
-  flex-shrink: 0;
-  min-height: 36px;
-}
-
-.mediascribe-side-panel-tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
-}
-
-.mediascribe-side-tab-btn {
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-s);
-  padding: 4px 10px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.15s ease;
-  user-select: none;
-  white-space: nowrap;
-}
-
-.mediascribe-side-tab-btn:hover {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover);
-}
-
-.mediascribe-side-tab-btn.is-active {
-  color: var(--interactive-accent);
-  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.15);
-  font-weight: 600;
-}
-
-.mediascribe-side-panel-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-normal);
-  padding: 2px 4px;
-}
-
-.mediascribe-side-panel-close-btn {
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-s);
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s ease;
-  flex-shrink: 0;
-}
-
-.mediascribe-side-panel-close-btn:hover {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover);
-}
-
-.mediascribe-side-panel-close-btn svg {
-  width: 14px;
-  height: 14px;
-}
-
 .mediascribe-side-panel-content {
   flex: 1 1 auto;
   overflow: hidden;
@@ -1487,6 +1422,18 @@
   max-height: 250px;
   overflow: hidden;
   transition: all 0.2s ease;
+}
+
+.mediascribe-view-root .mediascribe-transcript-panel,
+.mediascribe-view-root .mediascribe-description-view {
+  width: 100% !important;
+  max-width: 100% !important;
+  flex: 1 1 auto !important;
+  min-height: 260px !important;
+  max-height: none !important;
+  height: auto !important;
+  border-radius: 0 !important;
+  border-top: 1px solid var(--background-modifier-border) !important;
 }
 
 .mediascribe-side-panel .mediascribe-transcript-panel {
