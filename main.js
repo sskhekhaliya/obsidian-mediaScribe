@@ -28,6 +28,7 @@ var import_obsidian15 = require("obsidian");
 // src/types/index.ts
 var DEFAULT_SETTINGS = {
   autoEmbedInNote: true,
+  verifyMediaContentType: true,
   embeddedPlayerHeight: 340,
   embeddedPosition: "top",
   embeddedDockWidth: 420,
@@ -235,6 +236,13 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
       });
     });
     containerEl.createEl("h3", { text: "Note Properties Detection" });
+    new import_obsidian2.Setting(containerEl).setName("Validate Media Content Type").setDesc("Automatically verify that web links in properties are playable video/audio content (or YouTube/Vimeo) before opening the player. Prevents opening empty players for web articles, Wikipedia, GitHub, and general links.").addToggle((toggle) => {
+      toggle.setValue(this.plugin.settings.verifyMediaContentType ?? true).onChange(async (val) => {
+        this.plugin.settings.verifyMediaContentType = val;
+        await this.plugin.saveSettings();
+        this.plugin.embeddedManager.syncActiveView();
+      });
+    });
     new import_obsidian2.Setting(containerEl).setName("Media Frontmatter Properties").setDesc("Comma-separated property names in YAML frontmatter to recognize as video/audio links.").addText((text) => {
       text.setPlaceholder("media_link, media, video, url, youtube").setValue(this.plugin.settings.mediaPropertyNames.join(", ")).onChange(async (val) => {
         this.plugin.settings.mediaPropertyNames = val.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
@@ -425,15 +433,23 @@ function extractTimestampsFromText(text) {
 
 // src/services/mediaDetector.ts
 var MediaDetector = class {
+  // 1 hour cache
   constructor(app) {
+    this.probeCache = /* @__PURE__ */ new Map();
+    this.inFlightProbes = /* @__PURE__ */ new Map();
+    this.CACHE_TTL_MS = 60 * 60 * 1e3;
     this.app = app;
   }
   /**
-   * Resolves a media string (URL, vault link, or path) into structured MediaSourceInfo
+   * Fast synchronous check: resolves YouTube, Vimeo, Vault file, or direct media extensions.
+   * If a web URL has previously been probed and cached, returns the cached result.
    */
-  resolveSource(input, sourcePath = "") {
+  resolveSourceSync(input, sourcePath = "") {
     if (!input || typeof input !== "string") return null;
     let clean = input.trim();
+    if (clean.startsWith('"') && clean.endsWith('"') || clean.startsWith("'") && clean.endsWith("'")) {
+      clean = clean.slice(1, -1).trim();
+    }
     if (clean.startsWith("[[") && clean.endsWith("]]")) {
       clean = clean.slice(2, -2).split("|")[0].trim();
     }
@@ -449,20 +465,147 @@ var MediaDetector = class {
     if (vaultFileInfo) return vaultFileInfo;
     const webMediaInfo = this.checkWebMedia(clean);
     if (webMediaInfo) return webMediaInfo;
-    if (clean.startsWith("http://") || clean.startsWith("https://") || clean.startsWith("file://")) {
-      return {
-        type: "html5_video",
-        url: clean,
-        originalInput: input,
-        isLocal: clean.startsWith("file://")
-      };
+    const cached = this.probeCache.get(clean);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
+      return cached.info;
     }
     return null;
+  }
+  /**
+   * Resolves a media string (URL, vault link, or path) into structured MediaSourceInfo.
+   * Asynchronously verifies remote Content-Type for web URLs if verifyContentType is enabled.
+   */
+  async resolveSource(input, sourcePath = "", verifyContentType = true) {
+    if (!input || typeof input !== "string") return null;
+    let clean = input.trim();
+    if (clean.startsWith('"') && clean.endsWith('"') || clean.startsWith("'") && clean.endsWith("'")) {
+      clean = clean.slice(1, -1).trim();
+    }
+    if (clean.startsWith("[[") && clean.endsWith("]]")) {
+      clean = clean.slice(2, -2).split("|")[0].trim();
+    }
+    const mdLinkMatch = clean.match(/^\[.*?\]\((.+?)\)$/);
+    if (mdLinkMatch) {
+      clean = mdLinkMatch[1].trim();
+    }
+    const fastInfo = this.resolveSourceSync(clean, sourcePath);
+    if (fastInfo) return fastInfo;
+    const cached = this.probeCache.get(clean);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
+      return cached.info;
+    }
+    if (clean.startsWith("http://") || clean.startsWith("https://")) {
+      if (verifyContentType) {
+        return await this.probeMediaUrl(clean);
+      } else {
+        return {
+          type: "html5_video",
+          url: clean,
+          originalInput: input,
+          isLocal: false
+        };
+      }
+    }
+    if (clean.startsWith("file://")) {
+      const directInfo = this.checkWebMedia(clean);
+      if (directInfo) return directInfo;
+      if (!verifyContentType) {
+        return {
+          type: "html5_video",
+          url: clean,
+          originalInput: input,
+          isLocal: true
+        };
+      }
+    }
+    return null;
+  }
+  /**
+   * Probe an HTTP/HTTPS URL via HEAD (or range GET) to verify its Content-Type
+   */
+  async probeMediaUrl(urlStr) {
+    const cached = this.probeCache.get(urlStr);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
+      return cached.info;
+    }
+    if (this.inFlightProbes.has(urlStr)) {
+      return this.inFlightProbes.get(urlStr);
+    }
+    const probePromise = (async () => {
+      let contentType = "";
+      try {
+        const headPromise = (0, import_obsidian3.requestUrl)({
+          url: urlStr,
+          method: "HEAD",
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ObsidianMediaScribe/1.0"
+          },
+          throw: false
+        });
+        const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 2500));
+        const headRes = await Promise.race([headPromise, timeoutPromise]);
+        if (headRes && headRes.status >= 200 && headRes.status < 400) {
+          contentType = headRes.headers?.["content-type"] || "";
+        }
+        if (!contentType || headRes && headRes.status === 405) {
+          const getPromise = (0, import_obsidian3.requestUrl)({
+            url: urlStr,
+            method: "GET",
+            headers: {
+              "Range": "bytes=0-0",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ObsidianMediaScribe/1.0"
+            },
+            throw: false
+          });
+          const getRes = await Promise.race([getPromise, timeoutPromise]);
+          if (getRes && getRes.status >= 200 && getRes.status < 400) {
+            contentType = getRes.headers?.["content-type"] || "";
+          }
+        }
+      } catch {
+      }
+      contentType = contentType.toLowerCase().trim();
+      let info = null;
+      if (contentType.startsWith("video/")) {
+        info = {
+          type: "html5_video",
+          url: urlStr,
+          originalInput: urlStr,
+          isLocal: false
+        };
+      } else if (contentType.startsWith("audio/")) {
+        info = {
+          type: "html5_audio",
+          url: urlStr,
+          originalInput: urlStr,
+          isLocal: false
+        };
+      } else if (contentType.includes("application/ogg") || contentType.includes("application/vnd.apple.mpegurl") || contentType.includes("application/x-mpegurl") || contentType.includes("application/dash+xml")) {
+        info = {
+          type: "html5_video",
+          url: urlStr,
+          originalInput: urlStr,
+          isLocal: false
+        };
+      }
+      if (this.probeCache.size > 500) {
+        const firstKey = this.probeCache.keys().next().value;
+        if (firstKey) this.probeCache.delete(firstKey);
+      }
+      this.probeCache.set(urlStr, { info, timestamp: Date.now() });
+      return info;
+    })();
+    this.inFlightProbes.set(urlStr, probePromise);
+    try {
+      return await probePromise;
+    } finally {
+      this.inFlightProbes.delete(urlStr);
+    }
   }
   checkYouTube(input) {
     const listMatch = input.match(/[?&]list=([a-zA-Z0-9_-]+)/i);
     const playlistId = listMatch ? listMatch[1] : void 0;
-    const ytRegex = /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/|shorts\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i;
+    const ytRegex = /(?:https?:\/\/)?(?:[a-zA-Z0-9_-]+\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/|shorts\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i;
     const match = input.match(ytRegex);
     if (match && match[1]) {
       const videoId = match[1];
@@ -534,8 +677,8 @@ var MediaDetector = class {
     const file = this.app.metadataCache.getFirstLinkpathDest(input, sourcePath);
     if (file instanceof import_obsidian3.TFile) {
       const ext = file.extension.toLowerCase();
-      const videoExts = ["mp4", "webm", "mkv", "mov", "ogv", "m4v"];
-      const audioExts = ["mp3", "m4a", "wav", "ogg", "flac", "aac", "opus"];
+      const videoExts = ["mp4", "webm", "mkv", "mov", "ogv", "m4v", "avi", "ts", "3gp", "wmv", "flv"];
+      const audioExts = ["mp3", "m4a", "wav", "ogg", "flac", "aac", "opus", "weba", "oga", "mid", "midi", "wma", "aiff", "caf"];
       if (videoExts.includes(ext) || audioExts.includes(ext)) {
         const resourceUrl = this.app.vault.getResourcePath(file);
         return {
@@ -551,18 +694,78 @@ var MediaDetector = class {
     return null;
   }
   checkWebMedia(input) {
-    const videoExts = [".mp4", ".webm", ".mkv", ".mov", ".m4v", ".ogv"];
-    const audioExts = [".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac"];
+    const videoExts = [
+      ".mp4",
+      ".webm",
+      ".mkv",
+      ".mov",
+      ".m4v",
+      ".ogv",
+      ".avi",
+      ".ts",
+      ".3gp",
+      ".wmv",
+      ".asf",
+      ".m3u8",
+      ".mpd"
+    ];
+    const audioExts = [
+      ".mp3",
+      ".m4a",
+      ".wav",
+      ".ogg",
+      ".flac",
+      ".aac",
+      ".opus",
+      ".weba",
+      ".oga",
+      ".mid",
+      ".midi",
+      ".wma",
+      ".aiff",
+      ".caf"
+    ];
     try {
-      const url = new URL(input);
-      const pathname = url.pathname.toLowerCase();
+      let pathname = "";
+      let isFileUrl = false;
+      if (input.startsWith("file://")) {
+        const url = new URL(input);
+        pathname = decodeURIComponent(url.pathname).toLowerCase();
+        isFileUrl = true;
+      } else if (input.startsWith("http://") || input.startsWith("https://")) {
+        const url = new URL(input);
+        pathname = decodeURIComponent(url.pathname).toLowerCase();
+      } else {
+        const stripped = input.split(/[?#]/)[0].toLowerCase();
+        for (const ext of videoExts) {
+          if (stripped.endsWith(ext)) {
+            return {
+              type: "html5_video",
+              url: input,
+              originalInput: input,
+              isLocal: true
+            };
+          }
+        }
+        for (const ext of audioExts) {
+          if (stripped.endsWith(ext)) {
+            return {
+              type: "html5_audio",
+              url: input,
+              originalInput: input,
+              isLocal: true
+            };
+          }
+        }
+        return null;
+      }
       for (const ext of videoExts) {
         if (pathname.endsWith(ext)) {
           return {
             type: "html5_video",
             url: input,
             originalInput: input,
-            isLocal: false
+            isLocal: isFileUrl
           };
         }
       }
@@ -572,7 +775,7 @@ var MediaDetector = class {
             type: "html5_audio",
             url: input,
             originalInput: input,
-            isLocal: false
+            isLocal: isFileUrl
           };
         }
       }
@@ -581,9 +784,10 @@ var MediaDetector = class {
     return null;
   }
   /**
-   * Scans a note's frontmatter and body to find media links or playlists
+   * Scans a note's frontmatter and body to find media links or playlists.
+   * Asynchronously verifies remote Content-Type for web URLs if verifyContentType is enabled.
    */
-  extractMediaFromNote(file, mediaPropertyNames, additionalProperty) {
+  async extractMediaFromNote(file, mediaPropertyNames, additionalProperty, verifyContentType = true) {
     const cache = this.app.metadataCache.getFileCache(file);
     if (!cache) return null;
     const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty) ? [additionalProperty, ...mediaPropertyNames] : mediaPropertyNames;
@@ -604,7 +808,7 @@ var MediaDetector = class {
               customTitle = item.title || "";
             }
             if (rawUrl) {
-              const resolved = this.resolveSource(rawUrl, file.path);
+              const resolved = await this.resolveSource(rawUrl, file.path, verifyContentType);
               if (resolved) {
                 const itemTitle = customTitle || resolved.title || (resolved.videoId ? `YouTube (${resolved.videoId})` : `Part ${idx + 1}`);
                 resolved.title = itemTitle;
@@ -626,24 +830,81 @@ var MediaDetector = class {
           }
         }
         if (typeof val === "string") {
-          const info = this.resolveSource(val, file.path);
+          const info = await this.resolveSource(val, file.path, verifyContentType);
           if (info) return info;
         }
       }
     }
     if (cache.embeds) {
       for (const embed of cache.embeds) {
-        const info = this.resolveSource(embed.link, file.path);
+        const info = await this.resolveSource(embed.link, file.path, verifyContentType);
         if (info) return info;
       }
     }
     if (cache.links) {
       for (const link of cache.links) {
-        const info = this.resolveSource(link.link, file.path);
+        const info = await this.resolveSource(link.link, file.path, verifyContentType);
         if (info) return info;
       }
     }
     return null;
+  }
+  /**
+   * Fast synchronous check to find media in note without waiting on network probes.
+   */
+  extractMediaFromNoteSync(file, mediaPropertyNames, additionalProperty) {
+    const cache = this.app.metadataCache.getFileCache(file);
+    if (!cache) return null;
+    const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty) ? [additionalProperty, ...mediaPropertyNames] : mediaPropertyNames;
+    if (cache.frontmatter) {
+      for (const prop of propList) {
+        const val = cache.frontmatter[prop];
+        if (!val) continue;
+        if (Array.isArray(val) && val.length > 0) {
+          for (let idx = 0; idx < val.length; idx++) {
+            const item = val[idx];
+            const rawUrl = typeof item === "string" ? item : item?.url || item?.link || item?.media || "";
+            if (rawUrl) {
+              const resolved = this.resolveSourceSync(rawUrl, file.path);
+              if (resolved) return resolved;
+            }
+          }
+        }
+        if (typeof val === "string") {
+          const info = this.resolveSourceSync(val, file.path);
+          if (info) return info;
+        }
+      }
+    }
+    if (cache.embeds) {
+      for (const embed of cache.embeds) {
+        const info = this.resolveSourceSync(embed.link, file.path);
+        if (info) return info;
+      }
+    }
+    if (cache.links) {
+      for (const link of cache.links) {
+        const info = this.resolveSourceSync(link.link, file.path);
+        if (info) return info;
+      }
+    }
+    return null;
+  }
+  /**
+   * Fast check to determine if a note has candidate media properties or embeds
+   */
+  hasMediaCandidate(file, mediaPropertyNames, additionalProperty) {
+    const cache = this.app.metadataCache.getFileCache(file);
+    if (!cache) return false;
+    const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty) ? [additionalProperty, ...mediaPropertyNames] : mediaPropertyNames;
+    if (cache.frontmatter) {
+      for (const prop of propList) {
+        const val = cache.frontmatter[prop];
+        if (val) return true;
+      }
+    }
+    if (cache.embeds && cache.embeds.length > 0) return true;
+    return false;
   }
 };
 
@@ -4047,7 +4308,12 @@ var EmbeddedPlayerManager = class {
     if (this.closedNotes.has(file.path) && !forceOpen) {
       return;
     }
-    const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
+    const source = await this.detector.extractMediaFromNote(
+      file,
+      this.settings.mediaPropertyNames,
+      this.settings.playlistNoteProperty,
+      this.settings.verifyMediaContentType ?? true
+    );
     if (source) {
       let widget = this.activeWidgets.get(view);
       if (!widget) {
@@ -4107,7 +4373,12 @@ var EmbeddedPlayerManager = class {
     const file = view.file;
     this.settings.embeddedPosition = position;
     await this.onSettingsChange(this.settings);
-    const source = sourceToLoad || (file ? this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty) : null);
+    const source = sourceToLoad || (file ? await this.detector.extractMediaFromNote(
+      file,
+      this.settings.mediaPropertyNames,
+      this.settings.playlistNoteProperty,
+      this.settings.verifyMediaContentType ?? true
+    ) : null);
     if (!source) {
       new import_obsidian14.Notice("MediaScribe: No media found to dock into note.");
       return;
@@ -4157,8 +4428,15 @@ var EmbeddedPlayerManager = class {
     } else {
       this.closedNotes.delete(view.file.path);
       await this.syncView(view, true);
-      new import_obsidian14.Notice("MediaScribe: Player reopened.");
+      if (this.activeWidgets.has(view)) {
+        new import_obsidian14.Notice("MediaScribe: Player opened.");
+      } else {
+        new import_obsidian14.Notice("MediaScribe: No supported video/audio found in active note.");
+      }
     }
+  }
+  hasActiveWidget(view) {
+    return this.activeWidgets.has(view);
   }
   syncActiveView() {
     this.cleanupDisconnectedViews();
@@ -4342,8 +4620,18 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
         if (view && view.file) {
-          const source = this.detector.extractMediaFromNote(view.file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
-          if (source) {
+          if (this.embeddedManager.hasActiveWidget(view)) {
+            if (!checking) {
+              this.embeddedManager.toggleActiveView();
+            }
+            return true;
+          }
+          const hasCandidate = this.detector.hasMediaCandidate(
+            view.file,
+            this.settings.mediaPropertyNames,
+            this.settings.playlistNoteProperty
+          );
+          if (hasCandidate) {
             if (!checking) {
               this.embeddedManager.toggleActiveView();
             }
@@ -4360,15 +4648,22 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
         const file = this.app.workspace.getActiveFile();
         if (file) {
           if (!checking) {
-            const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
-            if (source) {
-              const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
-              if (view) {
-                this.embeddedManager.reopenView(view);
+            void (async () => {
+              const source = await this.detector.extractMediaFromNote(
+                file,
+                this.settings.mediaPropertyNames,
+                this.settings.playlistNoteProperty,
+                this.settings.verifyMediaContentType ?? true
+              );
+              if (source) {
+                const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+                if (view) {
+                  this.embeddedManager.reopenView(view);
+                }
+              } else {
+                new import_obsidian15.Notice("MediaScribe: No supported video/audio found in note.");
               }
-            } else {
-              new import_obsidian15.Notice("MediaScribe: No media property found in note frontmatter (e.g. media_link).");
-            }
+            })();
           }
           return true;
         }
@@ -4378,10 +4673,14 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
     this.addCommand({
       id: "mediascribe-open-custom-media",
       name: "Open media from URL or Vault file...",
-      callback: () => {
+      callback: async () => {
         const input = window.prompt("Enter YouTube URL, web media link, or Vault filename:");
         if (input && input.trim()) {
-          const source = this.detector.resolveSource(input.trim());
+          const source = await this.detector.resolveSource(
+            input.trim(),
+            "",
+            this.settings.verifyMediaContentType ?? true
+          );
           if (source) {
             const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
             if (view) {
@@ -4390,7 +4689,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
               new import_obsidian15.Notice("MediaScribe: Please open or focus a note in the editor to mount media.");
             }
           } else {
-            new import_obsidian15.Notice("MediaScribe: Invalid or unsupported media source.");
+            new import_obsidian15.Notice("MediaScribe: Invalid or unsupported media source. The link is not a playable video or audio source.");
           }
         }
       }
@@ -4551,12 +4850,18 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
     }
     const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
     if (activeView && activeView.file) {
-      const source = this.detector.extractMediaFromNote(activeView.file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
-      if (source) {
-        this.embeddedManager.reopenView(activeView, seconds);
-        new import_obsidian15.Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
-        return true;
-      }
+      void this.detector.extractMediaFromNote(
+        activeView.file,
+        this.settings.mediaPropertyNames,
+        this.settings.playlistNoteProperty,
+        this.settings.verifyMediaContentType ?? true
+      ).then((source) => {
+        if (source) {
+          this.embeddedManager.reopenView(activeView, seconds);
+          new import_obsidian15.Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
+        }
+      });
+      return true;
     }
     return false;
   }

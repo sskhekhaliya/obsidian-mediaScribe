@@ -54,6 +54,7 @@ export type PlayerPosition = EmbeddedPosition;
 
 export interface MediaScribeSettings {
   autoEmbedInNote: boolean;
+  verifyMediaContentType: boolean;
   embeddedPlayerHeight: number;
   embeddedPosition: EmbeddedPosition;
   embeddedDockWidth: number;
@@ -95,6 +96,7 @@ export interface StoredSidePanelState {
 
 export const DEFAULT_SETTINGS: MediaScribeSettings = {
   autoEmbedInNote: true,
+  verifyMediaContentType: true,
   embeddedPlayerHeight: 340,
   embeddedPosition: "top",
   embeddedDockWidth: 420,

@@ -107,7 +107,12 @@ export class EmbeddedPlayerManager {
       return;
     }
 
-    const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
+    const source = await this.detector.extractMediaFromNote(
+      file,
+      this.settings.mediaPropertyNames,
+      this.settings.playlistNoteProperty,
+      this.settings.verifyMediaContentType ?? true
+    );
 
     if (source) {
       let widget = this.activeWidgets.get(view);
@@ -179,7 +184,12 @@ export class EmbeddedPlayerManager {
     this.settings.embeddedPosition = position;
     await this.onSettingsChange(this.settings);
 
-    const source = sourceToLoad || (file ? this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty) : null);
+    const source = sourceToLoad || (file ? await this.detector.extractMediaFromNote(
+      file,
+      this.settings.mediaPropertyNames,
+      this.settings.playlistNoteProperty,
+      this.settings.verifyMediaContentType ?? true
+    ) : null);
     if (!source) {
       new Notice("MediaScribe: No media found to dock into note.");
       return;
@@ -235,8 +245,16 @@ export class EmbeddedPlayerManager {
     } else {
       this.closedNotes.delete(view.file.path);
       await this.syncView(view, true);
-      new Notice("MediaScribe: Player reopened.");
+      if (this.activeWidgets.has(view)) {
+        new Notice("MediaScribe: Player opened.");
+      } else {
+        new Notice("MediaScribe: No supported video/audio found in active note.");
+      }
     }
+  }
+
+  public hasActiveWidget(view: MarkdownView): boolean {
+    return this.activeWidgets.has(view);
   }
 
   public syncActiveView(): void {

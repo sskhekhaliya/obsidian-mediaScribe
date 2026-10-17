@@ -188,8 +188,18 @@ export default class MediaScribePlugin extends Plugin {
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (view && view.file) {
-          const source = this.detector.extractMediaFromNote(view.file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
-          if (source) {
+          if (this.embeddedManager.hasActiveWidget(view)) {
+            if (!checking) {
+              this.embeddedManager.toggleActiveView();
+            }
+            return true;
+          }
+          const hasCandidate = this.detector.hasMediaCandidate(
+            view.file,
+            this.settings.mediaPropertyNames,
+            this.settings.playlistNoteProperty
+          );
+          if (hasCandidate) {
             if (!checking) {
               this.embeddedManager.toggleActiveView();
             }
@@ -208,15 +218,22 @@ export default class MediaScribePlugin extends Plugin {
         const file = this.app.workspace.getActiveFile();
         if (file) {
           if (!checking) {
-            const source = this.detector.extractMediaFromNote(file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
-            if (source) {
-              const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-              if (view) {
-                this.embeddedManager.reopenView(view);
+            void (async () => {
+              const source = await this.detector.extractMediaFromNote(
+                file,
+                this.settings.mediaPropertyNames,
+                this.settings.playlistNoteProperty,
+                this.settings.verifyMediaContentType ?? true
+              );
+              if (source) {
+                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+                if (view) {
+                  this.embeddedManager.reopenView(view);
+                }
+              } else {
+                new Notice("MediaScribe: No supported video/audio found in note.");
               }
-            } else {
-              new Notice("MediaScribe: No media property found in note frontmatter (e.g. media_link).");
-            }
+            })();
           }
           return true;
         }
@@ -228,10 +245,14 @@ export default class MediaScribePlugin extends Plugin {
     this.addCommand({
       id: "mediascribe-open-custom-media",
       name: "Open media from URL or Vault file...",
-      callback: () => {
+      callback: async () => {
         const input = window.prompt("Enter YouTube URL, web media link, or Vault filename:");
         if (input && input.trim()) {
-          const source = this.detector.resolveSource(input.trim());
+          const source = await this.detector.resolveSource(
+            input.trim(),
+            "",
+            this.settings.verifyMediaContentType ?? true
+          );
           if (source) {
             const view = this.app.workspace.getActiveViewOfType(MarkdownView);
             if (view) {
@@ -240,7 +261,7 @@ export default class MediaScribePlugin extends Plugin {
               new Notice("MediaScribe: Please open or focus a note in the editor to mount media.");
             }
           } else {
-            new Notice("MediaScribe: Invalid or unsupported media source.");
+            new Notice("MediaScribe: Invalid or unsupported media source. The link is not a playable video or audio source.");
           }
         }
       }
@@ -436,12 +457,18 @@ export default class MediaScribePlugin extends Plugin {
     // If player was closed, reopen it for the active note!
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView && activeView.file) {
-      const source = this.detector.extractMediaFromNote(activeView.file, this.settings.mediaPropertyNames, this.settings.playlistNoteProperty);
-      if (source) {
-        this.embeddedManager.reopenView(activeView, seconds);
-        new Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
-        return true;
-      }
+      void this.detector.extractMediaFromNote(
+        activeView.file,
+        this.settings.mediaPropertyNames,
+        this.settings.playlistNoteProperty,
+        this.settings.verifyMediaContentType ?? true
+      ).then((source) => {
+        if (source) {
+          this.embeddedManager.reopenView(activeView, seconds);
+          new Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
+        }
+      });
+      return true;
     }
 
     return false;

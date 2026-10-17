@@ -297,6 +297,19 @@ export class MediaScribeSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Note Properties Detection" });
 
     new Setting(containerEl)
+      .setName("Validate Media Content Type")
+      .setDesc("Automatically verify that web links in properties are playable video/audio content (or YouTube/Vimeo) before opening the player. Prevents opening empty players for web articles, Wikipedia, GitHub, and general links.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.verifyMediaContentType ?? true)
+          .onChange(async (val) => {
+            this.plugin.settings.verifyMediaContentType = val;
+            await this.plugin.saveSettings();
+            this.plugin.embeddedManager.syncActiveView();
+          });
+      });
+
+    new Setting(containerEl)
       .setName("Media Frontmatter Properties")
       .setDesc("Comma-separated property names in YAML frontmatter to recognize as video/audio links.")
       .addText((text) => {
