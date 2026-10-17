@@ -1622,11 +1622,18 @@ var YouTubePlayer = class extends BasePlayer {
     this.iframeEl.addEventListener("load", () => {
       this.sendListening();
       let attempts = 0;
-      const readyCheck = window.setInterval(() => {
+      if (this.pollInterval !== null) {
+        window.clearInterval(this.pollInterval);
+        this.pollInterval = null;
+      }
+      this.pollInterval = window.setInterval(() => {
         attempts++;
         this.sendListening();
         if (this._isReady || attempts > 25) {
-          window.clearInterval(readyCheck);
+          if (this.pollInterval !== null) {
+            window.clearInterval(this.pollInterval);
+            this.pollInterval = null;
+          }
           if (!this._isReady) {
             this._isReady = true;
             this.emit("ready");
@@ -1659,6 +1666,9 @@ var YouTubePlayer = class extends BasePlayer {
   }
   setupMessageListener() {
     this.messageListener = (event) => {
+      if (!this.iframeEl || !this.iframeEl.contentWindow || event.source !== this.iframeEl.contentWindow) {
+        return;
+      }
       let data = event.data;
       if (typeof data === "string") {
         try {
@@ -2635,7 +2645,7 @@ var TimelineMarkers = class {
 
 // src/ui/MediaScribeEmbeddedWidget.ts
 var MediaScribeEmbeddedWidget = class {
-  constructor(plugin, markdownView, app, settings, screenshotService, timestampService, typingScribeService, transcriptService, onSettingsChange, onClose) {
+  constructor(plugin, markdownView, app, settings, screenshotService, timestampService, typingScribeService, transcriptService, onSettingsChange, onClose, onPlay) {
     this.player = null;
     this.currentSource = null;
     this.playlistIndex = 0;
@@ -2689,6 +2699,7 @@ var MediaScribeEmbeddedWidget = class {
     this.transcriptService = transcriptService;
     this.onSettingsChange = onSettingsChange;
     this.onClose = onClose;
+    this.onPlay = onPlay;
     this.hostEl = document.createElement("div");
     this.hostEl.className = "mediascribe-embedded-host";
     const contentEl = this.markdownView.contentEl;
@@ -3708,6 +3719,7 @@ ${propertyKey}: "${item.source.url}"
     });
     this.player.on("play", () => {
       this.updatePlayState(true);
+      this.onPlay?.();
     });
     this.player.on("pause", () => {
       this.updatePlayState(false);
@@ -3994,6 +4006,10 @@ var EmbeddedPlayerManager = class {
     }
     for (const widget of this.activeWidgets.values()) {
       const p = widget.getActivePlayer();
+      if (p && p.isPlaying) return p;
+    }
+    for (const widget of this.activeWidgets.values()) {
+      const p = widget.getActivePlayer();
       if (p) return p;
     }
     return null;
@@ -4002,6 +4018,10 @@ var EmbeddedPlayerManager = class {
     const activeView = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
     if (activeView && this.activeWidgets.has(activeView)) {
       return this.activeWidgets.get(activeView);
+    }
+    for (const widget of this.activeWidgets.values()) {
+      const p = widget.getActivePlayer();
+      if (p && p.isPlaying) return widget;
     }
     for (const widget of this.activeWidgets.values()) {
       return widget;
@@ -4045,6 +4065,11 @@ var EmbeddedPlayerManager = class {
             this.activeWidgets.delete(view);
             if (view.file) {
               this.closedNotes.add(view.file.path);
+            }
+          },
+          () => {
+            if (widget) {
+              this.handlePlayerPlay(widget);
             }
           }
         );
@@ -4106,6 +4131,9 @@ var EmbeddedPlayerManager = class {
         if (view.file) {
           this.closedNotes.add(view.file.path);
         }
+      },
+      () => {
+        this.handlePlayerPlay(widget);
       }
     );
     this.activeWidgets.set(view, widget);
@@ -4133,9 +4161,38 @@ var EmbeddedPlayerManager = class {
     }
   }
   syncActiveView() {
+    this.cleanupDisconnectedViews();
     const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
     if (view) {
       this.syncView(view);
+    }
+  }
+  /**
+   * Pauses all other active players when one player begins playback.
+   * Ensures exclusive playback across all open tabs.
+   */
+  handlePlayerPlay(playingWidget) {
+    const playingPlayer = playingWidget.getActivePlayer();
+    if (playingPlayer) {
+      this.typingScribeService.setPlayer(playingPlayer);
+    }
+    for (const widget of this.activeWidgets.values()) {
+      if (widget !== playingWidget) {
+        const player = widget.getActivePlayer();
+        if (player && player.isPlaying) {
+          player.pause();
+        }
+      }
+    }
+  }
+  /**
+   * Cleans up widgets whose view DOM element has been disconnected/closed.
+   */
+  cleanupDisconnectedViews() {
+    for (const [view, widget] of Array.from(this.activeWidgets.entries())) {
+      if (!view.containerEl || !view.containerEl.isConnected) {
+        this.dismountView(view);
+      }
     }
   }
   destroyAll() {

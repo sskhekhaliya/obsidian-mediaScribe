@@ -111,11 +111,18 @@ export class YouTubePlayer extends BasePlayer {
       this.sendListening();
       // Poll initial state
       let attempts = 0;
-      const readyCheck = window.setInterval(() => {
+      if (this.pollInterval !== null) {
+        window.clearInterval(this.pollInterval);
+        this.pollInterval = null;
+      }
+      this.pollInterval = window.setInterval(() => {
         attempts++;
         this.sendListening();
         if (this._isReady || attempts > 25) {
-          window.clearInterval(readyCheck);
+          if (this.pollInterval !== null) {
+            window.clearInterval(this.pollInterval);
+            this.pollInterval = null;
+          }
           if (!this._isReady) {
             this._isReady = true;
             this.emit("ready");
@@ -152,6 +159,11 @@ export class YouTubePlayer extends BasePlayer {
 
   private setupMessageListener(): void {
     this.messageListener = (event: MessageEvent) => {
+      // Strictly verify that the message originates from this player's own iframe contentWindow
+      if (!this.iframeEl || !this.iframeEl.contentWindow || event.source !== this.iframeEl.contentWindow) {
+        return;
+      }
+
       // YouTube embeds post JSON strings or objects
       let data: any = event.data;
       if (typeof data === "string") {

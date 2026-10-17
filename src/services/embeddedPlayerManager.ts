@@ -60,6 +60,10 @@ export class EmbeddedPlayerManager {
     }
     for (const widget of this.activeWidgets.values()) {
       const p = widget.getActivePlayer();
+      if (p && p.isPlaying) return p;
+    }
+    for (const widget of this.activeWidgets.values()) {
+      const p = widget.getActivePlayer();
       if (p) return p;
     }
     return null;
@@ -69,6 +73,10 @@ export class EmbeddedPlayerManager {
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView && this.activeWidgets.has(activeView)) {
       return this.activeWidgets.get(activeView)!;
+    }
+    for (const widget of this.activeWidgets.values()) {
+      const p = widget.getActivePlayer();
+      if (p && p.isPlaying) return widget;
     }
     for (const widget of this.activeWidgets.values()) {
       return widget;
@@ -118,6 +126,11 @@ export class EmbeddedPlayerManager {
             this.activeWidgets.delete(view);
             if (view.file) {
               this.closedNotes.add(view.file.path);
+            }
+          },
+          () => {
+            if (widget) {
+              this.handlePlayerPlay(widget);
             }
           }
         );
@@ -177,7 +190,7 @@ export class EmbeddedPlayerManager {
       this.closedNotes.delete(file.path);
     }
 
-    const widget = new MediaScribeEmbeddedWidget(
+    const widget: MediaScribeEmbeddedWidget = new MediaScribeEmbeddedWidget(
       this.plugin,
       view,
       this.app,
@@ -192,6 +205,9 @@ export class EmbeddedPlayerManager {
         if (view.file) {
           this.closedNotes.add(view.file.path);
         }
+      },
+      () => {
+        this.handlePlayerPlay(widget);
       }
     );
     this.activeWidgets.set(view, widget);
@@ -224,9 +240,40 @@ export class EmbeddedPlayerManager {
   }
 
   public syncActiveView(): void {
+    this.cleanupDisconnectedViews();
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (view) {
       this.syncView(view);
+    }
+  }
+
+  /**
+   * Pauses all other active players when one player begins playback.
+   * Ensures exclusive playback across all open tabs.
+   */
+  public handlePlayerPlay(playingWidget: MediaScribeEmbeddedWidget): void {
+    const playingPlayer = playingWidget.getActivePlayer();
+    if (playingPlayer) {
+      this.typingScribeService.setPlayer(playingPlayer);
+    }
+    for (const widget of this.activeWidgets.values()) {
+      if (widget !== playingWidget) {
+        const player = widget.getActivePlayer();
+        if (player && player.isPlaying) {
+          player.pause();
+        }
+      }
+    }
+  }
+
+  /**
+   * Cleans up widgets whose view DOM element has been disconnected/closed.
+   */
+  public cleanupDisconnectedViews(): void {
+    for (const [view, widget] of Array.from(this.activeWidgets.entries())) {
+      if (!view.containerEl || !view.containerEl.isConnected) {
+        this.dismountView(view);
+      }
     }
   }
 

@@ -59,6 +59,7 @@ export class MediaScribeEmbeddedWidget {
   private activeSideTab: "playlist" | "transcript" | "description" = "playlist";
   private isCollapsed: boolean = false;
   private onClose?: () => void;
+  private onPlay?: () => void;
 
   // Description & Creator Info
   private currentDescription: string | null = null;
@@ -86,7 +87,8 @@ export class MediaScribeEmbeddedWidget {
     typingScribeService: TypingScribeService,
     transcriptService: TranscriptService,
     onSettingsChange: (settings: MediaScribeSettings) => Promise<void>,
-    onClose?: () => void
+    onClose?: () => void,
+    onPlay?: () => void
   ) {
     this.plugin = plugin;
     this.markdownView = markdownView;
@@ -98,6 +100,7 @@ export class MediaScribeEmbeddedWidget {
     this.transcriptService = transcriptService;
     this.onSettingsChange = onSettingsChange;
     this.onClose = onClose;
+    this.onPlay = onPlay;
 
     // Create host element and prepend to markdown view's content container
     this.hostEl = document.createElement("div");
@@ -1374,6 +1377,7 @@ export class MediaScribeEmbeddedWidget {
 
     this.player.on("play", () => {
       this.updatePlayState(true);
+      this.onPlay?.();
     });
 
     this.player.on("pause", () => {
