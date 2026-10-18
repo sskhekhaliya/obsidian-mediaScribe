@@ -8,6 +8,7 @@ export class HTML5Player extends BasePlayer {
   private centerOverlayEl: HTMLElement | null = null;
   private centerPlayBtn: HTMLElement | null = null;
   private initialTime: number;
+  private _hasEnded: boolean = false;
 
   constructor(url: string, isAudioOnly: boolean = false, initialTime: number = 0) {
     super();
@@ -110,8 +111,14 @@ export class HTML5Player extends BasePlayer {
 
     media.addEventListener("play", () => {
       this._isPlaying = true;
+      this._hasEnded = false;
       if (this.centerOverlayEl) {
         this.centerOverlayEl.addClass("is-playing");
+      }
+      if (this.centerPlayBtn) {
+        this.centerPlayBtn.empty();
+        setIcon(this.centerPlayBtn, "play");
+        this.centerPlayBtn.removeAttribute("title");
       }
       this.emit("play");
     });
@@ -132,8 +139,14 @@ export class HTML5Player extends BasePlayer {
 
     media.addEventListener("ended", () => {
       this._isPlaying = false;
+      this._hasEnded = true;
       if (this.centerOverlayEl) {
         this.centerOverlayEl.removeClass("is-playing");
+      }
+      if (this.centerPlayBtn) {
+        this.centerPlayBtn.empty();
+        setIcon(this.centerPlayBtn, "rotate-ccw");
+        this.centerPlayBtn.setAttribute("title", "Replay");
       }
       this.emit("ended");
     });
@@ -151,6 +164,10 @@ export class HTML5Player extends BasePlayer {
   public async play(): Promise<void> {
     if (this.mediaEl) {
       try {
+        if (this._hasEnded || this.mediaEl.ended || (this.mediaEl.duration && this.mediaEl.currentTime >= this.mediaEl.duration - 0.5)) {
+          this._hasEnded = false;
+          this.mediaEl.currentTime = 0;
+        }
         await this.mediaEl.play();
         this._isPlaying = true;
       } catch (err) {
@@ -168,7 +185,7 @@ export class HTML5Player extends BasePlayer {
 
   public async togglePlay(): Promise<void> {
     if (!this.mediaEl) return;
-    if (this.mediaEl.paused) {
+    if (this.mediaEl.paused || this._hasEnded) {
       await this.play();
     } else {
       await this.pause();
@@ -177,6 +194,7 @@ export class HTML5Player extends BasePlayer {
 
   public seekTo(seconds: number): void {
     if (this.mediaEl) {
+      this._hasEnded = false;
       this.mediaEl.currentTime = Math.max(0, seconds);
       this.emit("timeupdate", this.mediaEl.currentTime);
     }

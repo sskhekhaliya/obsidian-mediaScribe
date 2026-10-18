@@ -1733,3 +1733,102 @@
   padding-left: 6px !important;
 }
 
+/* ==========================================================================
+   Playlist Autoplay Toggle & Switch (YouTube Style)
+   ========================================================================== */
+.mediascribe-autoplay-switch {
+  position: relative;
+  width: 28px;
+  height: 14px;
+  background: rgba(128, 128, 128, 0.35);
+  border-radius: 7px;
+  transition: background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-block;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.mediascribe-autoplay-switch.is-active {
+  background: var(--interactive-accent);
+}
+
+.mediascribe-autoplay-knob {
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mediascribe-autoplay-switch.is-active .mediascribe-autoplay-knob {
+  transform: translateX(12px);
+}
+
+.mediascribe-autoplay-knob svg {
+  width: 7px;
+  height: 7px;
+  fill: #444444;
+  margin-left: 1px;
+  display: block;
+}
+
+.mediascribe-autoplay-switch.is-active .mediascribe-autoplay-knob svg {
+  fill: var(--interactive-accent);
+}
+
+/* Playlist Drawer Header & Controls */
+.mediascribe-playlist-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  user-select: none;
+  background: var(--background-secondary);
+  flex-shrink: 0;
+}
+
+.mediascribe-playlist-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--text-normal);
+  font-size: 12px;
+}
+
+.mediascribe-playlist-drawer-autoplay {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-s);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mediascribe-playlist-drawer-autoplay:hover {
+  background: var(--background-modifier-hover);
+}
+
+.mediascribe-playlist-drawer-autoplay .mediascribe-autoplay-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.mediascribe-playlist-drawer-autoplay:hover .mediascribe-autoplay-label,
+.mediascribe-playlist-drawer-autoplay.is-active .mediascribe-autoplay-label {
+  color: var(--text-normal);
+}
+
+

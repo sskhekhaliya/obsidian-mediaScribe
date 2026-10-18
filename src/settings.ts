@@ -325,8 +325,21 @@ export class MediaScribeSettingTab extends PluginSettingTab {
           });
       });
 
-    // --- Playlist Notes ---
-    containerEl.createEl("h3", { text: "Playlist Note Creation" });
+    // --- Playlists & Autoplay ---
+    containerEl.createEl("h3", { text: "Playlists & Autoplay" });
+
+    new Setting(containerEl)
+      .setName("Playlist Autoplay")
+      .setDesc("Automatically play the next video in a playlist when the current video finishes. When disabled, playback stops at the end and displays a replay button.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.playlistAutoplay ?? true)
+          .onChange(async (val) => {
+            this.plugin.settings.playlistAutoplay = val;
+            await this.plugin.saveSettings();
+            this.plugin.embeddedManager.syncActiveView();
+          });
+      });
 
     new Setting(containerEl)
       .setName("Video Link Property Name")

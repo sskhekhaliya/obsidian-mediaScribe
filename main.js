@@ -59,7 +59,8 @@ var DEFAULT_SETTINGS = {
   enableAmbientMode: true,
   playlistNoteProperty: "video_link",
   playlistNoteFolderLocation: "current_folder",
-  playlistNoteSpecificFolder: ""
+  playlistNoteSpecificFolder: "",
+  playlistAutoplay: true
 };
 
 // src/settings.ts
@@ -249,7 +250,14 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    containerEl.createEl("h3", { text: "Playlist Note Creation" });
+    containerEl.createEl("h3", { text: "Playlists & Autoplay" });
+    new import_obsidian2.Setting(containerEl).setName("Playlist Autoplay").setDesc("Automatically play the next video in a playlist when the current video finishes. When disabled, playback stops at the end and displays a replay button.").addToggle((toggle) => {
+      toggle.setValue(this.plugin.settings.playlistAutoplay ?? true).onChange(async (val) => {
+        this.plugin.settings.playlistAutoplay = val;
+        await this.plugin.saveSettings();
+        this.plugin.embeddedManager.syncActiveView();
+      });
+    });
     new import_obsidian2.Setting(containerEl).setName("Video Link Property Name").setDesc("The frontmatter property name used when generating notes from playlist videos.").addText((text) => {
       text.setPlaceholder("video_link").setValue(this.plugin.settings.playlistNoteProperty).onChange(async (val) => {
         this.plugin.settings.playlistNoteProperty = val.trim() || "video_link";
@@ -1956,6 +1964,7 @@ var YouTubePlayer = class extends BasePlayer {
       }
       if (state !== null) {
         if (state === 1) {
+          this._hasEnded = false;
           this.disableCaptions();
           this.hideThumbnail();
           this._isPlaying = true;
@@ -2164,6 +2173,7 @@ var YouTubePlayer = class extends BasePlayer {
     }
   }
   seekTo(seconds) {
+    this._hasEnded = false;
     this.currentTime = Math.max(0, seconds);
     this.sendPostMessage("seekTo", [this.currentTime, true]);
     this.emit("timeupdate", this.currentTime);
@@ -2269,6 +2279,7 @@ var HTML5Player = class extends BasePlayer {
     this.mediaEl = null;
     this.centerOverlayEl = null;
     this.centerPlayBtn = null;
+    this._hasEnded = false;
     this.url = url;
     this.isAudioOnly = isAudioOnly;
     this.initialTime = initialTime;
@@ -2354,8 +2365,14 @@ var HTML5Player = class extends BasePlayer {
     }
     media.addEventListener("play", () => {
       this._isPlaying = true;
+      this._hasEnded = false;
       if (this.centerOverlayEl) {
         this.centerOverlayEl.addClass("is-playing");
+      }
+      if (this.centerPlayBtn) {
+        this.centerPlayBtn.empty();
+        (0, import_obsidian10.setIcon)(this.centerPlayBtn, "play");
+        this.centerPlayBtn.removeAttribute("title");
       }
       this.emit("play");
     });
@@ -2372,8 +2389,14 @@ var HTML5Player = class extends BasePlayer {
     });
     media.addEventListener("ended", () => {
       this._isPlaying = false;
+      this._hasEnded = true;
       if (this.centerOverlayEl) {
         this.centerOverlayEl.removeClass("is-playing");
+      }
+      if (this.centerPlayBtn) {
+        this.centerPlayBtn.empty();
+        (0, import_obsidian10.setIcon)(this.centerPlayBtn, "rotate-ccw");
+        this.centerPlayBtn.setAttribute("title", "Replay");
       }
       this.emit("ended");
     });
@@ -2388,6 +2411,10 @@ var HTML5Player = class extends BasePlayer {
   async play() {
     if (this.mediaEl) {
       try {
+        if (this._hasEnded || this.mediaEl.ended || this.mediaEl.duration && this.mediaEl.currentTime >= this.mediaEl.duration - 0.5) {
+          this._hasEnded = false;
+          this.mediaEl.currentTime = 0;
+        }
         await this.mediaEl.play();
         this._isPlaying = true;
       } catch (err) {
@@ -2403,7 +2430,7 @@ var HTML5Player = class extends BasePlayer {
   }
   async togglePlay() {
     if (!this.mediaEl) return;
-    if (this.mediaEl.paused) {
+    if (this.mediaEl.paused || this._hasEnded) {
       await this.play();
     } else {
       await this.pause();
@@ -2411,6 +2438,7 @@ var HTML5Player = class extends BasePlayer {
   }
   seekTo(seconds) {
     if (this.mediaEl) {
+      this._hasEnded = false;
       this.mediaEl.currentTime = Math.max(0, seconds);
       this.emit("timeupdate", this.mediaEl.currentTime);
     }
@@ -2925,11 +2953,14 @@ var MediaScribeEmbeddedWidget = class {
     this.playlistToggleBtn = null;
     this.prevVideoBtn = null;
     this.nextVideoBtn = null;
+    this.playlistDrawerAutoplaySwitch = null;
     this.speedBtn = null;
     // State
     this.currentTime = 0;
     this.duration = 0;
     this.isScrubbing = false;
+    this.hasEnded = false;
+    this.completedVideoIds = /* @__PURE__ */ new Set();
     this.loopA = null;
     this.loopB = null;
     this.isLooping = false;
@@ -3044,11 +3075,14 @@ var MediaScribeEmbeddedWidget = class {
       }
     }
     this.updateHeaderInfo();
-    let startPosition = source.initialTime || 0;
-    if (this.settings.rememberPlaybackPosition) {
-      if (source.videoId && this.settings.storedPlaybackPositions[source.videoId]) {
+    this.hasEnded = false;
+    let startPosition = 0;
+    if (typeof source.initialTime === "number") {
+      startPosition = source.initialTime;
+    } else if (this.settings.rememberPlaybackPosition) {
+      if (source.videoId && typeof this.settings.storedPlaybackPositions?.[source.videoId] === "number") {
         startPosition = this.settings.storedPlaybackPositions[source.videoId];
-      } else if (source.url && this.settings.storedPlaybackPositions[source.url]) {
+      } else if (source.url && typeof this.settings.storedPlaybackPositions?.[source.url] === "number") {
         startPosition = this.settings.storedPlaybackPositions[source.url];
       }
     }
@@ -3334,8 +3368,15 @@ var MediaScribeEmbeddedWidget = class {
     (0, import_obsidian13.setIcon)(this.playBtn, "play");
     this.playBtn.addEventListener("click", async () => {
       if (!this.player) return;
-      await this.player.togglePlay();
-      this.updatePlayState(this.player.isPlaying);
+      if (this.hasEnded) {
+        this.hasEnded = false;
+        this.player.seekTo(0);
+        await this.player.play();
+        this.updatePlayState(true);
+      } else {
+        await this.player.togglePlay();
+        this.updatePlayState(this.player.isPlaying);
+      }
     });
     this.prevVideoBtn = leftControls.createEl("button", {
       cls: "mediascribe-ctrl-btn is-hidden",
@@ -3761,6 +3802,34 @@ var MediaScribeEmbeddedWidget = class {
   renderPlaylistItems() {
     if (!this.playlistDrawerEl) return;
     this.playlistDrawerEl.empty();
+    const isPlaylist = Boolean(this.currentSource?.playlistItems && this.currentSource.playlistItems.length > 0);
+    if (isPlaylist) {
+      const headerEl = this.playlistDrawerEl.createDiv({ cls: "mediascribe-playlist-drawer-header" });
+      const titleEl = headerEl.createDiv({ cls: "mediascribe-playlist-drawer-title" });
+      const total = this.currentSource?.playlistItems?.length || 0;
+      titleEl.setText(`Playlist (${this.playlistIndex + 1}/${total})`);
+      const autoplayToggle = headerEl.createDiv({
+        cls: `mediascribe-playlist-drawer-autoplay ${this.settings.playlistAutoplay ? "is-active" : ""}`,
+        attr: {
+          title: this.settings.playlistAutoplay ? "Autoplay is ON (Click to turn off)" : "Autoplay is OFF (Click to turn on)"
+        }
+      });
+      const autoplayLabel = autoplayToggle.createSpan({ cls: "mediascribe-autoplay-label" });
+      autoplayLabel.setText("Autoplay");
+      const drawerSwitch = autoplayToggle.createDiv({
+        cls: `mediascribe-autoplay-switch ${this.settings.playlistAutoplay ? "is-active" : ""}`
+      });
+      const drawerKnob = drawerSwitch.createDiv({ cls: "mediascribe-autoplay-knob" });
+      drawerKnob.innerHTML = `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"/></svg>`;
+      this.playlistDrawerAutoplaySwitch = drawerSwitch;
+      autoplayToggle.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        this.settings.playlistAutoplay = !this.settings.playlistAutoplay;
+        this.updateAutoplayUI();
+        await this.onSettingsChange(this.settings);
+        new import_obsidian13.Notice(`MediaScribe: Playlist Autoplay ${this.settings.playlistAutoplay ? "ON" : "OFF"}`);
+      });
+    }
     const listEl = this.playlistDrawerEl.createDiv({ cls: "mediascribe-playlist-list" });
     if (this.currentSource?.playlistItems && this.currentSource.playlistItems.length > 0) {
       this.currentSource.playlistItems.forEach((item, idx) => {
@@ -3864,28 +3933,60 @@ ${propertyKey}: "${item.source.url}"
       new import_obsidian13.Notice(`MediaScribe: Failed to create note: ${err?.message || err}`);
     }
   }
+  updateAutoplayUI() {
+    const isAutoplay = Boolean(this.settings.playlistAutoplay);
+    const title = isAutoplay ? "Autoplay is ON (Click to turn off)" : "Autoplay is OFF (Click to turn on)";
+    if (this.playlistDrawerAutoplaySwitch) {
+      this.playlistDrawerAutoplaySwitch.toggleClass("is-active", isAutoplay);
+      const parent = this.playlistDrawerAutoplaySwitch.closest(".mediascribe-playlist-drawer-autoplay");
+      if (parent) {
+        parent.toggleClass("is-active", isAutoplay);
+        parent.setAttribute("title", title);
+      }
+    }
+  }
   updatePlaylistUI() {
     const isPlaylist = Boolean(this.currentSource?.isPlaylist);
     this.prevVideoBtn?.toggleClass("is-hidden", !isPlaylist);
     this.nextVideoBtn?.toggleClass("is-hidden", !isPlaylist);
+    this.updateAutoplayUI();
     this.renderPlaylistItems();
     this.updateSidePanelTabs();
   }
-  async switchPlaylistItem(idx) {
+  async switchPlaylistItem(idx, forceFromStart = false) {
     if (!this.currentSource?.playlistItems || !this.currentSource.playlistItems[idx]) return;
     await this.saveCurrentPosition();
     const selectedItem = this.currentSource.playlistItems[idx];
     if (!selectedItem) return;
     const targetVideoId = selectedItem.videoId || selectedItem.source?.videoId;
     const targetUrl = selectedItem.source?.url;
+    const isTargetCompleted = Boolean(
+      targetVideoId && this.completedVideoIds.has(targetVideoId) || targetUrl && this.completedVideoIds.has(targetUrl)
+    );
     let resumeTime = 0;
-    if (this.settings.rememberPlaybackPosition) {
+    if (!forceFromStart && !isTargetCompleted && this.settings.rememberPlaybackPosition) {
       if (targetVideoId && typeof this.settings.storedPlaybackPositions?.[targetVideoId] === "number") {
         resumeTime = this.settings.storedPlaybackPositions[targetVideoId];
       } else if (targetUrl && typeof this.settings.storedPlaybackPositions?.[targetUrl] === "number") {
         resumeTime = this.settings.storedPlaybackPositions[targetUrl];
       }
     }
+    if (selectedItem.duration) {
+      const parsedDur = parseTimestamp(selectedItem.duration);
+      if (parsedDur && parsedDur > 0 && resumeTime >= parsedDur - 3) {
+        resumeTime = 0;
+      }
+    }
+    if (forceFromStart || isTargetCompleted) {
+      resumeTime = 0;
+      if (targetVideoId && this.settings.storedPlaybackPositions) {
+        this.settings.storedPlaybackPositions[targetVideoId] = 0;
+      }
+      if (targetUrl && this.settings.storedPlaybackPositions) {
+        this.settings.storedPlaybackPositions[targetUrl] = 0;
+      }
+    }
+    this.hasEnded = false;
     const newSource = {
       ...selectedItem.source || {},
       type: "youtube",
@@ -3927,6 +4028,13 @@ ${propertyKey}: "${item.source.url}"
     if (this.currentSource.playlistItems && this.currentSource.playlistItems.length > 0) {
       if (this.playlistIndex > 0) {
         await this.switchPlaylistItem(this.playlistIndex - 1);
+      } else {
+        if (this.player) {
+          this.hasEnded = false;
+          this.player.seekTo(0);
+          await this.player.play();
+          this.updatePlayState(true);
+        }
       }
     }
   }
@@ -3979,6 +4087,7 @@ ${propertyKey}: "${item.source.url}"
       this.updatePlayState(false);
     });
     this.player.on("play", () => {
+      this.hasEnded = false;
       this.updatePlayState(true);
       this.onPlay?.();
     });
@@ -4052,18 +4161,29 @@ ${propertyKey}: "${item.source.url}"
       }
     });
     this.player.on("ended", () => {
-      this.updatePlayState(false);
-      this.saveCurrentPosition();
-      if (this.currentSource?.playlistItems && this.playlistIndex < this.currentSource.playlistItems.length - 1) {
+      this.hasEnded = true;
+      if (this.currentSource?.videoId) this.completedVideoIds.add(this.currentSource.videoId);
+      if (this.currentSource?.url) this.completedVideoIds.add(this.currentSource.url);
+      this.updatePlayState(false, true);
+      this.saveCurrentPosition(true);
+      const hasNext = Boolean(
+        this.currentSource?.playlistItems && this.playlistIndex < this.currentSource.playlistItems.length - 1
+      );
+      if (this.settings.playlistAutoplay && hasNext) {
         this.handleNextVideo();
       }
     });
   }
-  updatePlayState(isPlaying) {
+  updatePlayState(isPlaying, isEnded = false) {
     if (this.playBtn) {
       this.playBtn.empty();
-      (0, import_obsidian13.setIcon)(this.playBtn, isPlaying ? "pause" : "play");
-      this.playBtn.setAttribute("title", isPlaying ? "Pause (Ctrl+K)" : "Play (Ctrl+K)");
+      if (isEnded) {
+        (0, import_obsidian13.setIcon)(this.playBtn, "rotate-ccw");
+        this.playBtn.setAttribute("title", "Replay (Ctrl+K)");
+      } else {
+        (0, import_obsidian13.setIcon)(this.playBtn, isPlaying ? "pause" : "play");
+        this.playBtn.setAttribute("title", isPlaying ? "Pause (Ctrl+K)" : "Play (Ctrl+K)");
+      }
     }
   }
   updateTimeDisplay() {
@@ -4100,19 +4220,37 @@ ${propertyKey}: "${item.source.url}"
       this.transcriptPanel.setItems([]);
     }
   }
-  async saveCurrentPosition() {
+  async saveCurrentPosition(isEnded = false) {
     if (!this.settings.rememberPlaybackPosition || !this.currentSource) return;
-    if (this.player) {
-      try {
-        const pTime = await this.player.getCurrentTime();
-        if (typeof pTime === "number" && pTime > 0) {
-          this.currentTime = pTime;
+    let time = 0;
+    if (isEnded || this.hasEnded) {
+      time = 0;
+      this.currentTime = 0;
+      if (this.currentSource.videoId) this.completedVideoIds.add(this.currentSource.videoId);
+      if (this.currentSource.url) this.completedVideoIds.add(this.currentSource.url);
+    } else {
+      if (this.player) {
+        try {
+          const pTime = await this.player.getCurrentTime();
+          if (typeof pTime === "number" && pTime > 0) {
+            this.currentTime = pTime;
+          }
+        } catch {
         }
-      } catch {
+      }
+      if (this.duration > 0 && this.currentTime >= this.duration - 3) {
+        time = 0;
+        this.currentTime = 0;
+        if (this.currentSource.videoId) this.completedVideoIds.add(this.currentSource.videoId);
+        if (this.currentSource.url) this.completedVideoIds.add(this.currentSource.url);
+      } else {
+        time = Math.max(0, Math.floor(this.currentTime));
+        if (time > 0) {
+          if (this.currentSource.videoId) this.completedVideoIds.delete(this.currentSource.videoId);
+          if (this.currentSource.url) this.completedVideoIds.delete(this.currentSource.url);
+        }
       }
     }
-    if (this.currentTime <= 0) return;
-    const time = Math.floor(this.currentTime);
     if (!this.settings.storedPlaybackPositions) {
       this.settings.storedPlaybackPositions = {};
     }
@@ -4208,6 +4346,7 @@ ${propertyKey}: "${item.source.url}"
     this.settings = settings;
     this.applyPositionStyles();
     this.ambientGlowService.setEnabled(settings.enableAmbientMode);
+    this.updateAutoplayUI();
   }
   getHostEl() {
     return this.hostEl;

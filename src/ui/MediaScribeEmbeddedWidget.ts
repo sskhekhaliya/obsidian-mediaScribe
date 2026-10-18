@@ -46,12 +46,15 @@ export class MediaScribeEmbeddedWidget {
   private playlistToggleBtn: HTMLButtonElement | null = null;
   private prevVideoBtn: HTMLButtonElement | null = null;
   private nextVideoBtn: HTMLButtonElement | null = null;
+  private playlistDrawerAutoplaySwitch: HTMLElement | null = null;
   private speedBtn: HTMLButtonElement | null = null;
 
   // State
   private currentTime: number = 0;
   private duration: number = 0;
   private isScrubbing: boolean = false;
+  private hasEnded: boolean = false;
+  private completedVideoIds: Set<string> = new Set();
   private loopA: number | null = null;
   private loopB: number | null = null;
   private isLooping: boolean = false;
@@ -208,11 +211,14 @@ export class MediaScribeEmbeddedWidget {
 
     this.updateHeaderInfo();
 
-    let startPosition = source.initialTime || 0;
-    if (this.settings.rememberPlaybackPosition) {
-      if (source.videoId && this.settings.storedPlaybackPositions[source.videoId]) {
+    this.hasEnded = false;
+    let startPosition = 0;
+    if (typeof source.initialTime === "number") {
+      startPosition = source.initialTime;
+    } else if (this.settings.rememberPlaybackPosition) {
+      if (source.videoId && typeof this.settings.storedPlaybackPositions?.[source.videoId] === "number") {
         startPosition = this.settings.storedPlaybackPositions[source.videoId];
-      } else if (source.url && this.settings.storedPlaybackPositions[source.url]) {
+      } else if (source.url && typeof this.settings.storedPlaybackPositions?.[source.url] === "number") {
         startPosition = this.settings.storedPlaybackPositions[source.url];
       }
     }
@@ -577,8 +583,15 @@ export class MediaScribeEmbeddedWidget {
     setIcon(this.playBtn, "play");
     this.playBtn.addEventListener("click", async () => {
       if (!this.player) return;
-      await this.player.togglePlay();
-      this.updatePlayState(this.player.isPlaying);
+      if (this.hasEnded) {
+        this.hasEnded = false;
+        this.player.seekTo(0);
+        await this.player.play();
+        this.updatePlayState(true);
+      } else {
+        await this.player.togglePlay();
+        this.updatePlayState(this.player.isPlaying);
+      }
     });
 
     // Previous Video in Playlist
@@ -1096,6 +1109,38 @@ export class MediaScribeEmbeddedWidget {
     if (!this.playlistDrawerEl) return;
     this.playlistDrawerEl.empty();
 
+    const isPlaylist = Boolean(this.currentSource?.playlistItems && this.currentSource.playlistItems.length > 0);
+    if (isPlaylist) {
+      const headerEl = this.playlistDrawerEl.createDiv({ cls: "mediascribe-playlist-drawer-header" });
+      const titleEl = headerEl.createDiv({ cls: "mediascribe-playlist-drawer-title" });
+      const total = this.currentSource?.playlistItems?.length || 0;
+      titleEl.setText(`Playlist (${this.playlistIndex + 1}/${total})`);
+
+      const autoplayToggle = headerEl.createDiv({
+        cls: `mediascribe-playlist-drawer-autoplay ${this.settings.playlistAutoplay ? "is-active" : ""}`,
+        attr: {
+          title: this.settings.playlistAutoplay ? "Autoplay is ON (Click to turn off)" : "Autoplay is OFF (Click to turn on)"
+        }
+      });
+      const autoplayLabel = autoplayToggle.createSpan({ cls: "mediascribe-autoplay-label" });
+      autoplayLabel.setText("Autoplay");
+
+      const drawerSwitch = autoplayToggle.createDiv({
+        cls: `mediascribe-autoplay-switch ${this.settings.playlistAutoplay ? "is-active" : ""}`
+      });
+      const drawerKnob = drawerSwitch.createDiv({ cls: "mediascribe-autoplay-knob" });
+      drawerKnob.innerHTML = `<svg viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"/></svg>`;
+      this.playlistDrawerAutoplaySwitch = drawerSwitch;
+
+      autoplayToggle.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        this.settings.playlistAutoplay = !this.settings.playlistAutoplay;
+        this.updateAutoplayUI();
+        await this.onSettingsChange(this.settings);
+        new Notice(`MediaScribe: Playlist Autoplay ${this.settings.playlistAutoplay ? "ON" : "OFF"}`);
+      });
+    }
+
     const listEl = this.playlistDrawerEl.createDiv({ cls: "mediascribe-playlist-list" });
 
     if (this.currentSource?.playlistItems && this.currentSource.playlistItems.length > 0) {
@@ -1236,15 +1281,30 @@ export class MediaScribeEmbeddedWidget {
     }
   }
 
+  public updateAutoplayUI(): void {
+    const isAutoplay = Boolean(this.settings.playlistAutoplay);
+    const title = isAutoplay ? "Autoplay is ON (Click to turn off)" : "Autoplay is OFF (Click to turn on)";
+
+    if (this.playlistDrawerAutoplaySwitch) {
+      this.playlistDrawerAutoplaySwitch.toggleClass("is-active", isAutoplay);
+      const parent = this.playlistDrawerAutoplaySwitch.closest(".mediascribe-playlist-drawer-autoplay");
+      if (parent) {
+        parent.toggleClass("is-active", isAutoplay);
+        parent.setAttribute("title", title);
+      }
+    }
+  }
+
   private updatePlaylistUI(): void {
     const isPlaylist = Boolean(this.currentSource?.isPlaylist);
     this.prevVideoBtn?.toggleClass("is-hidden", !isPlaylist);
     this.nextVideoBtn?.toggleClass("is-hidden", !isPlaylist);
+    this.updateAutoplayUI();
     this.renderPlaylistItems();
     this.updateSidePanelTabs();
   }
 
-  private async switchPlaylistItem(idx: number): Promise<void> {
+  private async switchPlaylistItem(idx: number, forceFromStart: boolean = false): Promise<void> {
     if (!this.currentSource?.playlistItems || !this.currentSource.playlistItems[idx]) return;
 
     // 1. Save current video position before navigating away
@@ -1256,15 +1316,40 @@ export class MediaScribeEmbeddedWidget {
     const targetVideoId = selectedItem.videoId || selectedItem.source?.videoId;
     const targetUrl = selectedItem.source?.url;
 
-    // 2. Look up saved position for target video
+    const isTargetCompleted = Boolean(
+      (targetVideoId && this.completedVideoIds.has(targetVideoId)) ||
+      (targetUrl && this.completedVideoIds.has(targetUrl))
+    );
+
+    // 2. Look up saved position for target video (resumes where left off unless completed or forced from start)
     let resumeTime = 0;
-    if (this.settings.rememberPlaybackPosition) {
+    if (!forceFromStart && !isTargetCompleted && this.settings.rememberPlaybackPosition) {
       if (targetVideoId && typeof this.settings.storedPlaybackPositions?.[targetVideoId] === "number") {
         resumeTime = this.settings.storedPlaybackPositions[targetVideoId];
       } else if (targetUrl && typeof this.settings.storedPlaybackPositions?.[targetUrl] === "number") {
         resumeTime = this.settings.storedPlaybackPositions[targetUrl];
       }
     }
+
+    // Safety check: if target item has a duration, and resumeTime is within 3s of the end, start from 0
+    if (selectedItem.duration) {
+      const parsedDur = parseTimestamp(selectedItem.duration);
+      if (parsedDur && parsedDur > 0 && resumeTime >= parsedDur - 3) {
+        resumeTime = 0;
+      }
+    }
+
+    if (forceFromStart || isTargetCompleted) {
+      resumeTime = 0;
+      if (targetVideoId && this.settings.storedPlaybackPositions) {
+        this.settings.storedPlaybackPositions[targetVideoId] = 0;
+      }
+      if (targetUrl && this.settings.storedPlaybackPositions) {
+        this.settings.storedPlaybackPositions[targetUrl] = 0;
+      }
+    }
+
+    this.hasEnded = false;
 
     // 3. Construct new source with target saved position
     const newSource: MediaSourceInfo = {
@@ -1312,6 +1397,14 @@ export class MediaScribeEmbeddedWidget {
     if (this.currentSource.playlistItems && this.currentSource.playlistItems.length > 0) {
       if (this.playlistIndex > 0) {
         await this.switchPlaylistItem(this.playlistIndex - 1);
+      } else {
+        // If at the very first video in the playlist, restart it from 0
+        if (this.player) {
+          this.hasEnded = false;
+          this.player.seekTo(0);
+          await this.player.play();
+          this.updatePlayState(true);
+        }
       }
     }
   }
@@ -1376,6 +1469,7 @@ export class MediaScribeEmbeddedWidget {
     });
 
     this.player.on("play", () => {
+      this.hasEnded = false;
       this.updatePlayState(true);
       this.onPlay?.();
     });
@@ -1459,21 +1553,34 @@ export class MediaScribeEmbeddedWidget {
     });
 
     this.player.on("ended", () => {
-      this.updatePlayState(false);
-      this.saveCurrentPosition();
+      this.hasEnded = true;
+      if (this.currentSource?.videoId) this.completedVideoIds.add(this.currentSource.videoId);
+      if (this.currentSource?.url) this.completedVideoIds.add(this.currentSource.url);
+      this.updatePlayState(false, true);
+      this.saveCurrentPosition(true);
 
-      // Autoplay next item in playlist if available
-      if (this.currentSource?.playlistItems && this.playlistIndex < this.currentSource.playlistItems.length - 1) {
+      const hasNext = Boolean(
+        this.currentSource?.playlistItems &&
+        this.playlistIndex < this.currentSource.playlistItems.length - 1
+      );
+
+      // Autoplay next item in playlist if available AND enabled
+      if (this.settings.playlistAutoplay && hasNext) {
         this.handleNextVideo();
       }
     });
   }
 
-  private updatePlayState(isPlaying: boolean): void {
+  private updatePlayState(isPlaying: boolean, isEnded: boolean = false): void {
     if (this.playBtn) {
       this.playBtn.empty();
-      setIcon(this.playBtn, isPlaying ? "pause" : "play");
-      this.playBtn.setAttribute("title", isPlaying ? "Pause (Ctrl+K)" : "Play (Ctrl+K)");
+      if (isEnded) {
+        setIcon(this.playBtn, "rotate-ccw");
+        this.playBtn.setAttribute("title", "Replay (Ctrl+K)");
+      } else {
+        setIcon(this.playBtn, isPlaying ? "pause" : "play");
+        this.playBtn.setAttribute("title", isPlaying ? "Pause (Ctrl+K)" : "Play (Ctrl+K)");
+      }
     }
   }
 
@@ -1516,20 +1623,40 @@ export class MediaScribeEmbeddedWidget {
     }
   }
 
-  private async saveCurrentPosition(): Promise<void> {
+  private async saveCurrentPosition(isEnded: boolean = false): Promise<void> {
     if (!this.settings.rememberPlaybackPosition || !this.currentSource) return;
 
-    if (this.player) {
-      try {
-        const pTime = await this.player.getCurrentTime();
-        if (typeof pTime === "number" && pTime > 0) {
-          this.currentTime = pTime;
-        }
-      } catch {}
-    }
+    let time = 0;
+    if (isEnded || this.hasEnded) {
+      time = 0;
+      this.currentTime = 0;
+      if (this.currentSource.videoId) this.completedVideoIds.add(this.currentSource.videoId);
+      if (this.currentSource.url) this.completedVideoIds.add(this.currentSource.url);
+    } else {
+      if (this.player) {
+        try {
+          const pTime = await this.player.getCurrentTime();
+          if (typeof pTime === "number" && pTime > 0) {
+            this.currentTime = pTime;
+          }
+        } catch {}
+      }
 
-    if (this.currentTime <= 0) return;
-    const time = Math.floor(this.currentTime);
+      // If near the end (within 3 seconds of duration), treat as completed -> restart at 0 next time
+      if (this.duration > 0 && this.currentTime >= this.duration - 3) {
+        time = 0;
+        this.currentTime = 0;
+        if (this.currentSource.videoId) this.completedVideoIds.add(this.currentSource.videoId);
+        if (this.currentSource.url) this.completedVideoIds.add(this.currentSource.url);
+      } else {
+        time = Math.max(0, Math.floor(this.currentTime));
+        // Video paused or stopped in the middle -> remove from completed set so it resumes where left
+        if (time > 0) {
+          if (this.currentSource.videoId) this.completedVideoIds.delete(this.currentSource.videoId);
+          if (this.currentSource.url) this.completedVideoIds.delete(this.currentSource.url);
+        }
+      }
+    }
 
     if (!this.settings.storedPlaybackPositions) {
       this.settings.storedPlaybackPositions = {};
@@ -1635,6 +1762,7 @@ export class MediaScribeEmbeddedWidget {
     this.settings = settings;
     this.applyPositionStyles();
     this.ambientGlowService.setEnabled(settings.enableAmbientMode);
+    this.updateAutoplayUI();
   }
 
   public getHostEl(): HTMLElement {

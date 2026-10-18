@@ -197,6 +197,7 @@ export class YouTubePlayer extends BasePlayer {
 
       if (state !== null) {
         if (state === 1) { // Playing
+          this._hasEnded = false;
           this.disableCaptions();
           this.hideThumbnail();
           this._isPlaying = true;
@@ -433,6 +434,7 @@ export class YouTubePlayer extends BasePlayer {
   }
 
   public seekTo(seconds: number): void {
+    this._hasEnded = false;
     this.currentTime = Math.max(0, seconds);
     this.sendPostMessage("seekTo", [this.currentTime, true]);
     this.emit("timeupdate", this.currentTime);
