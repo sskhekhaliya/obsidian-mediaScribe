@@ -60,7 +60,8 @@ var DEFAULT_SETTINGS = {
   playlistNoteProperty: "video_link",
   playlistNoteFolderLocation: "current_folder",
   playlistNoteSpecificFolder: "",
-  playlistAutoplay: true
+  playlistAutoplay: true,
+  mobileTopMargin: 48
 };
 
 // src/settings.ts
@@ -117,16 +118,34 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
         this.plugin.embeddedManager.syncActiveView();
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("Embedded Player Position").setDesc("Choose where the player docks when embedded inside a note.").addDropdown((dropdown) => {
-      dropdown.addOption("top", "Top (Horizontal)").addOption("vertical_right", "Vertical Split (Right side)").addOption("vertical_left", "Vertical Split (Left side)").setValue(this.plugin.settings.embeddedPosition || "top").onChange(async (val) => {
+    new import_obsidian2.Setting(containerEl).setName(
+      import_obsidian2.Platform.isDesktop ? "Embedded Player Position" : "Embedded Player Position (Landscape)"
+    ).setDesc(
+      import_obsidian2.Platform.isDesktop ? "Choose where the player docks when embedded inside a note." : "On mobile and tablet, portrait mode docks at the top. In landscape mode, choose whether the player appears on the right or left (top option is disabled in landscape)."
+    ).addDropdown((dropdown) => {
+      if (import_obsidian2.Platform.isDesktop) {
+        dropdown.addOption("top", "Top (Horizontal)").addOption("vertical_right", "Vertical Split (Right side)").addOption("vertical_left", "Vertical Split (Left side)").setValue(this.plugin.settings.embeddedPosition || "top");
+      } else {
+        dropdown.addOption("vertical_right", "Vertical Split (Right side)").addOption("vertical_left", "Vertical Split (Left side)").setValue(this.plugin.settings.embeddedPosition === "vertical_left" ? "vertical_left" : "vertical_right");
+      }
+      dropdown.onChange(async (val) => {
         this.plugin.settings.embeddedPosition = val;
         await this.plugin.saveSettings();
         this.plugin.embeddedManager.syncActiveView();
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("Vertical Dock Width").setDesc("Width in pixels when docked vertically on the left or right side of a note.").addSlider((slider) => {
-      slider.setLimits(280, 650, 10).setValue(this.plugin.settings.embeddedDockWidth || 420).setDynamicTooltip().onChange(async (val) => {
-        this.plugin.settings.embeddedDockWidth = val;
+    if (import_obsidian2.Platform.isDesktop) {
+      new import_obsidian2.Setting(containerEl).setName("Vertical Dock Width").setDesc("Width in pixels when docked vertically on the left or right side of a note.").addSlider((slider) => {
+        slider.setLimits(280, 650, 10).setValue(this.plugin.settings.embeddedDockWidth || 420).setDynamicTooltip().onChange(async (val) => {
+          this.plugin.settings.embeddedDockWidth = val;
+          await this.plugin.saveSettings();
+          this.plugin.embeddedManager.syncActiveView();
+        });
+      });
+    }
+    new import_obsidian2.Setting(containerEl).setName("Mobile Top Margin").setDesc("Extra margin spacing (in pixels) added at the top of the embedded player on mobile devices so it stays clear of the phone notification/status bar and Obsidian top navigation UI.").addSlider((slider) => {
+      slider.setLimits(0, 120, 2).setValue(this.plugin.settings.mobileTopMargin ?? 48).setDynamicTooltip().onChange(async (val) => {
+        this.plugin.settings.mobileTopMargin = val;
         await this.plugin.saveSettings();
         this.plugin.embeddedManager.syncActiveView();
       });
@@ -458,6 +477,9 @@ var MediaDetector = class {
     if (clean.startsWith('"') && clean.endsWith('"') || clean.startsWith("'") && clean.endsWith("'")) {
       clean = clean.slice(1, -1).trim();
     }
+    if (clean.startsWith("!") && (clean.startsWith("![[") || clean.startsWith("!["))) {
+      clean = clean.slice(1).trim();
+    }
     if (clean.startsWith("[[") && clean.endsWith("]]")) {
       clean = clean.slice(2, -2).split("|")[0].trim();
     }
@@ -488,6 +510,9 @@ var MediaDetector = class {
     let clean = input.trim();
     if (clean.startsWith('"') && clean.endsWith('"') || clean.startsWith("'") && clean.endsWith("'")) {
       clean = clean.slice(1, -1).trim();
+    }
+    if (clean.startsWith("!") && (clean.startsWith("![[") || clean.startsWith("!["))) {
+      clean = clean.slice(1).trim();
     }
     if (clean.startsWith("[[") && clean.endsWith("]]")) {
       clean = clean.slice(2, -2).split("|")[0].trim();
@@ -792,126 +817,98 @@ var MediaDetector = class {
     return null;
   }
   /**
-   * Scans a note's frontmatter and body to find media links or playlists.
+   * Scans a note's frontmatter properties to find media links or playlists.
+   * Only looks at frontmatter properties (never scans the note body).
    * Asynchronously verifies remote Content-Type for web URLs if verifyContentType is enabled.
    */
   async extractMediaFromNote(file, mediaPropertyNames, additionalProperty, verifyContentType = true) {
     const cache = this.app.metadataCache.getFileCache(file);
-    if (!cache) return null;
+    if (!cache || !cache.frontmatter) return null;
     const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty) ? [additionalProperty, ...mediaPropertyNames] : mediaPropertyNames;
-    if (cache.frontmatter) {
-      for (const prop of propList) {
-        const val = cache.frontmatter[prop];
-        if (!val) continue;
-        if (Array.isArray(val) && val.length > 0) {
-          const items = [];
-          for (let idx = 0; idx < val.length; idx++) {
-            const item = val[idx];
-            let rawUrl = "";
-            let customTitle = "";
-            if (typeof item === "string") {
-              rawUrl = item;
-            } else if (item && typeof item === "object") {
-              rawUrl = item.url || item.link || item.media || "";
-              customTitle = item.title || "";
-            }
-            if (rawUrl) {
-              const resolved = await this.resolveSource(rawUrl, file.path, verifyContentType);
-              if (resolved) {
-                const itemTitle = customTitle || resolved.title || (resolved.videoId ? `YouTube (${resolved.videoId})` : `Part ${idx + 1}`);
-                resolved.title = itemTitle;
-                items.push({
-                  title: itemTitle,
-                  source: resolved
-                });
-              }
+    for (const prop of propList) {
+      const val = cache.frontmatter[prop];
+      if (!val) continue;
+      if (Array.isArray(val) && val.length > 0) {
+        const items = [];
+        for (let idx = 0; idx < val.length; idx++) {
+          const item = val[idx];
+          let rawUrl = "";
+          let customTitle = "";
+          if (typeof item === "string") {
+            rawUrl = item;
+          } else if (item && typeof item === "object") {
+            rawUrl = item.url || item.link || item.media || "";
+            customTitle = item.title || "";
+          }
+          if (rawUrl) {
+            const resolved = await this.resolveSource(rawUrl, file.path, verifyContentType);
+            if (resolved) {
+              const itemTitle = customTitle || resolved.title || (resolved.videoId ? `YouTube (${resolved.videoId})` : `Part ${idx + 1}`);
+              resolved.title = itemTitle;
+              items.push({
+                title: itemTitle,
+                source: resolved
+              });
             }
           }
-          if (items.length > 0) {
-            const first = items[0].source;
-            return {
-              ...first,
-              isPlaylist: true,
-              playlistIndex: 0,
-              playlistItems: items
-            };
-          }
         }
-        if (typeof val === "string") {
-          const info = await this.resolveSource(val, file.path, verifyContentType);
-          if (info) return info;
+        if (items.length > 0) {
+          const first = items[0].source;
+          return {
+            ...first,
+            isPlaylist: true,
+            playlistIndex: 0,
+            playlistItems: items
+          };
         }
       }
-    }
-    if (cache.embeds) {
-      for (const embed of cache.embeds) {
-        const info = await this.resolveSource(embed.link, file.path, verifyContentType);
-        if (info) return info;
-      }
-    }
-    if (cache.links) {
-      for (const link of cache.links) {
-        const info = await this.resolveSource(link.link, file.path, verifyContentType);
+      if (typeof val === "string" || typeof val === "number") {
+        const info = await this.resolveSource(String(val), file.path, verifyContentType);
         if (info) return info;
       }
     }
     return null;
   }
   /**
-   * Fast synchronous check to find media in note without waiting on network probes.
+   * Fast synchronous check to find media in note frontmatter properties without waiting on network probes.
+   * Only looks at frontmatter properties (never scans the note body).
    */
   extractMediaFromNoteSync(file, mediaPropertyNames, additionalProperty) {
     const cache = this.app.metadataCache.getFileCache(file);
-    if (!cache) return null;
+    if (!cache || !cache.frontmatter) return null;
     const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty) ? [additionalProperty, ...mediaPropertyNames] : mediaPropertyNames;
-    if (cache.frontmatter) {
-      for (const prop of propList) {
-        const val = cache.frontmatter[prop];
-        if (!val) continue;
-        if (Array.isArray(val) && val.length > 0) {
-          for (let idx = 0; idx < val.length; idx++) {
-            const item = val[idx];
-            const rawUrl = typeof item === "string" ? item : item?.url || item?.link || item?.media || "";
-            if (rawUrl) {
-              const resolved = this.resolveSourceSync(rawUrl, file.path);
-              if (resolved) return resolved;
-            }
+    for (const prop of propList) {
+      const val = cache.frontmatter[prop];
+      if (!val) continue;
+      if (Array.isArray(val) && val.length > 0) {
+        for (let idx = 0; idx < val.length; idx++) {
+          const item = val[idx];
+          const rawUrl = typeof item === "string" ? item : item?.url || item?.link || item?.media || "";
+          if (rawUrl) {
+            const resolved = this.resolveSourceSync(rawUrl, file.path);
+            if (resolved) return resolved;
           }
         }
-        if (typeof val === "string") {
-          const info = this.resolveSourceSync(val, file.path);
-          if (info) return info;
-        }
       }
-    }
-    if (cache.embeds) {
-      for (const embed of cache.embeds) {
-        const info = this.resolveSourceSync(embed.link, file.path);
-        if (info) return info;
-      }
-    }
-    if (cache.links) {
-      for (const link of cache.links) {
-        const info = this.resolveSourceSync(link.link, file.path);
+      if (typeof val === "string" || typeof val === "number") {
+        const info = this.resolveSourceSync(String(val), file.path);
         if (info) return info;
       }
     }
     return null;
   }
   /**
-   * Fast check to determine if a note has candidate media properties or embeds
+   * Fast check to determine if a note has candidate media properties in frontmatter.
+   * Only returns true if a recognized property in frontmatter has a value.
    */
   hasMediaCandidate(file, mediaPropertyNames, additionalProperty) {
     const cache = this.app.metadataCache.getFileCache(file);
-    if (!cache) return false;
+    if (!cache || !cache.frontmatter) return false;
     const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty) ? [additionalProperty, ...mediaPropertyNames] : mediaPropertyNames;
-    if (cache.frontmatter) {
-      for (const prop of propList) {
-        const val = cache.frontmatter[prop];
-        if (val) return true;
-      }
+    for (const prop of propList) {
+      const val = cache.frontmatter[prop];
+      if (val) return true;
     }
-    if (cache.embeds && cache.embeds.length > 0) return true;
     return false;
   }
 };
@@ -2980,7 +2977,16 @@ var MediaScribeEmbeddedWidget = class {
     this.descriptionViewEl = null;
     this.transcriptBtn = null;
     this.descriptionBtn = null;
-    this.descriptionCtrlBtn = null;
+    this.posBtn = null;
+    this.lastAppliedPosition = "top";
+    this.onResizeHandler = () => {
+      if (!import_obsidian13.Platform.isDesktop) {
+        const currentEffective = this.getEffectivePosition();
+        if (this.lastAppliedPosition !== currentEffective) {
+          this.applyPositionStyles();
+        }
+      }
+    };
     this.plugin = plugin;
     this.markdownView = markdownView;
     this.app = app;
@@ -2996,37 +3002,79 @@ var MediaScribeEmbeddedWidget = class {
     this.hostEl.className = "mediascribe-embedded-host";
     const contentEl = this.markdownView.contentEl;
     contentEl.prepend(this.hostEl);
+    window.addEventListener("resize", this.onResizeHandler);
+    window.addEventListener("orientationchange", this.onResizeHandler);
     this.applyPositionStyles();
     this.render();
   }
+  isMobileLandscape() {
+    if (!import_obsidian13.Platform.isMobile && !import_obsidian13.Platform.isPhone) {
+      return false;
+    }
+    return window.innerWidth > window.innerHeight;
+  }
+  getEffectivePosition() {
+    if (import_obsidian13.Platform.isDesktop) {
+      return this.settings.embeddedPosition || "top";
+    }
+    if (this.isMobileLandscape()) {
+      if (this.settings.embeddedPosition === "vertical_left") {
+        return "vertical_left";
+      }
+      return "vertical_right";
+    }
+    return "top";
+  }
   applyPositionStyles() {
-    const pos = this.settings.embeddedPosition || "top";
+    const pos = this.getEffectivePosition();
+    this.lastAppliedPosition = pos;
     const contentEl = this.markdownView.contentEl;
+    if (import_obsidian13.Platform.isMobile || import_obsidian13.Platform.isPhone) {
+      const topMargin = typeof this.settings.mobileTopMargin === "number" ? this.settings.mobileTopMargin : 48;
+      this.hostEl.style.setProperty("--mediascribe-mobile-top-margin", `${topMargin}px`);
+    } else {
+      this.hostEl.style.removeProperty("--mediascribe-mobile-top-margin");
+    }
     contentEl.removeClass("mediascribe-dock-vertical", "mediascribe-dock-left", "mediascribe-dock-right");
     this.hostEl.removeClass("mediascribe-vertical-mode", "mediascribe-top-mode");
+    const isMobile = import_obsidian13.Platform.isMobile || import_obsidian13.Platform.isPhone;
+    const maxDockW = Math.floor(window.innerWidth * 0.8);
+    const minDockW = Math.min(180, Math.floor(window.innerWidth * 0.25));
+    const dockWidth = isMobile ? Math.max(minDockW, Math.min(this.settings.embeddedDockWidth || 380, maxDockW)) : this.settings.embeddedDockWidth || 420;
     if (pos === "vertical_left") {
       contentEl.addClass("mediascribe-dock-vertical", "mediascribe-dock-left");
       this.hostEl.addClass("mediascribe-vertical-mode");
       this.hostEl.style.removeProperty("--mediascribe-embed-height");
-      this.hostEl.style.setProperty("--mediascribe-dock-width", `${this.settings.embeddedDockWidth || 420}px`);
-      contentEl.style.setProperty("--mediascribe-dock-width", `${this.settings.embeddedDockWidth || 420}px`);
+      this.hostEl.style.setProperty("--mediascribe-dock-width", `${dockWidth}px`);
+      contentEl.style.setProperty("--mediascribe-dock-width", `${dockWidth}px`);
     } else if (pos === "vertical_right") {
       contentEl.addClass("mediascribe-dock-vertical", "mediascribe-dock-right");
       this.hostEl.addClass("mediascribe-vertical-mode");
       this.hostEl.style.removeProperty("--mediascribe-embed-height");
-      this.hostEl.style.setProperty("--mediascribe-dock-width", `${this.settings.embeddedDockWidth || 420}px`);
-      contentEl.style.setProperty("--mediascribe-dock-width", `${this.settings.embeddedDockWidth || 420}px`);
+      this.hostEl.style.setProperty("--mediascribe-dock-width", `${dockWidth}px`);
+      contentEl.style.setProperty("--mediascribe-dock-width", `${dockWidth}px`);
     } else {
       this.hostEl.addClass("mediascribe-top-mode");
       this.hostEl.style.removeProperty("--mediascribe-dock-width");
       contentEl.style.removeProperty("--mediascribe-dock-width");
       this.hostEl.style.setProperty("--mediascribe-embed-height", `${this.settings.embeddedPlayerHeight || 340}px`);
     }
+    this.updatePositionButtonVisibility();
     this.updateSidePanelPosition();
+  }
+  updatePositionButtonVisibility() {
+    if (!this.posBtn) return;
+    if (import_obsidian13.Platform.isDesktop) {
+      this.posBtn.style.display = "";
+    } else if (this.isMobileLandscape()) {
+      this.posBtn.style.display = "";
+    } else {
+      this.posBtn.style.display = "none";
+    }
   }
   updateSidePanelPosition() {
     if (!this.sidePanelEl) return;
-    const pos = this.settings.embeddedPosition || "top";
+    const pos = this.getEffectivePosition();
     if (pos === "top") {
       if (this.playerAreaEl && this.sidePanelEl.parentElement !== this.playerAreaEl) {
         this.playerAreaEl.appendChild(this.sidePanelEl);
@@ -3040,6 +3088,19 @@ var MediaScribeEmbeddedWidget = class {
     }
   }
   async setPosition(pos) {
+    if (!import_obsidian13.Platform.isDesktop) {
+      if (this.isMobileLandscape()) {
+        if (pos === "top") {
+          new import_obsidian13.Notice("MediaScribe: In mobile landscape, player must dock at left or right.");
+          return;
+        }
+      } else {
+        if (pos !== "top") {
+          new import_obsidian13.Notice("MediaScribe: In portrait, player docks at the top.");
+          return;
+        }
+      }
+    }
     this.settings.embeddedPosition = pos;
     await this.onSettingsChange(this.settings);
     this.applyPositionStyles();
@@ -3220,6 +3281,14 @@ var MediaScribeEmbeddedWidget = class {
         this.playlistBadgeEl.addClass("is-hidden");
       }
     }
+    const hasPlaylist = Boolean(this.currentSource.isPlaylist && (this.currentSource.playlistItems?.length ?? 0) > 0);
+    if (this.playlistToggleBtn) {
+      this.playlistToggleBtn.style.display = hasPlaylist ? "" : "none";
+      this.playlistToggleBtn.toggleClass("is-hidden", !hasPlaylist);
+    }
+    if (!hasPlaylist && this.isSidePanelOpen && this.activeSideTab === "playlist") {
+      this.closeSidePanel();
+    }
   }
   render() {
     this.hostEl.empty();
@@ -3251,6 +3320,9 @@ var MediaScribeEmbeddedWidget = class {
     this.playlistToggleBtn.addEventListener("click", () => {
       this.toggleSideTab("playlist");
     });
+    const hasPlaylist = Boolean(this.currentSource?.isPlaylist && (this.currentSource?.playlistItems?.length ?? 0) > 0);
+    this.playlistToggleBtn.style.display = hasPlaylist ? "" : "none";
+    this.playlistToggleBtn.toggleClass("is-hidden", !hasPlaylist);
     this.descriptionBtn = actions.createEl("button", {
       cls: "mediascribe-btn-icon",
       attr: { title: "Toggle Video Description & Creator Info" }
@@ -3279,14 +3351,15 @@ var MediaScribeEmbeddedWidget = class {
       this.ambientGlowService.setEnabled(this.settings.enableAmbientMode);
       await this.onSettingsChange(this.settings);
     });
-    const posBtn = actions.createEl("button", {
+    this.posBtn = actions.createEl("button", {
       cls: "mediascribe-btn-icon",
       attr: { title: "Switch Position (Top, Vertical, Sidebar)" }
     });
-    (0, import_obsidian13.setIcon)(posBtn, "layout");
-    posBtn.addEventListener("click", (e) => {
+    (0, import_obsidian13.setIcon)(this.posBtn, "layout");
+    this.posBtn.addEventListener("click", (e) => {
       this.showPositionMenu(e);
     });
+    this.updatePositionButtonVisibility();
     const collapseBtn = actions.createEl("button", {
       cls: "mediascribe-btn-icon",
       attr: { title: "Minimize Player (Audio / Compact Mode)" }
@@ -3310,16 +3383,29 @@ var MediaScribeEmbeddedWidget = class {
   }
   showPositionMenu(e) {
     const menu = new import_obsidian13.Menu();
-    const currentPos = this.settings.embeddedPosition || "top";
-    menu.addItem((item) => {
-      item.setTitle("Top (Horizontal)").setIcon("rows").setChecked(currentPos === "top").onClick(() => this.setPosition("top"));
-    });
-    menu.addItem((item) => {
-      item.setTitle("Vertical Split (Right side)").setIcon("panel-right").setChecked(currentPos === "vertical_right").onClick(() => this.setPosition("vertical_right"));
-    });
-    menu.addItem((item) => {
-      item.setTitle("Vertical Split (Left side)").setIcon("panel-left").setChecked(currentPos === "vertical_left").onClick(() => this.setPosition("vertical_left"));
-    });
+    const currentPos = this.getEffectivePosition();
+    if (import_obsidian13.Platform.isDesktop) {
+      menu.addItem((item) => {
+        item.setTitle("Top (Horizontal)").setIcon("rows").setChecked(currentPos === "top").onClick(() => this.setPosition("top"));
+      });
+      menu.addItem((item) => {
+        item.setTitle("Vertical Split (Right side)").setIcon("panel-right").setChecked(currentPos === "vertical_right").onClick(() => this.setPosition("vertical_right"));
+      });
+      menu.addItem((item) => {
+        item.setTitle("Vertical Split (Left side)").setIcon("panel-left").setChecked(currentPos === "vertical_left").onClick(() => this.setPosition("vertical_left"));
+      });
+    } else if (this.isMobileLandscape()) {
+      menu.addItem((item) => {
+        item.setTitle("Vertical Split (Right side)").setIcon("panel-right").setChecked(currentPos === "vertical_right").onClick(() => this.setPosition("vertical_right"));
+      });
+      menu.addItem((item) => {
+        item.setTitle("Vertical Split (Left side)").setIcon("panel-left").setChecked(currentPos === "vertical_left").onClick(() => this.setPosition("vertical_left"));
+      });
+    } else {
+      menu.addItem((item) => {
+        item.setTitle("Top (Horizontal)").setIcon("rows").setChecked(currentPos === "top").onClick(() => this.setPosition("top"));
+      });
+    }
     menu.showAtMouseEvent(e);
   }
   buildControls(parentEl) {
@@ -3497,7 +3583,7 @@ var MediaScribeEmbeddedWidget = class {
     });
     const snapBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn",
-      attr: { title: "Capture Video Frame (Ctrl+Shift+S)" }
+      attr: { title: "Take Screenshot (Ctrl+Shift+S)" }
     });
     (0, import_obsidian13.setIcon)(snapBtn, "camera");
     snapBtn.addEventListener("click", () => this.captureScreenshot());
@@ -3508,14 +3594,6 @@ var MediaScribeEmbeddedWidget = class {
     (0, import_obsidian13.setIcon)(this.transcriptBtn, "subtitles");
     this.transcriptBtn.addEventListener("click", () => {
       this.toggleSideTab("transcript");
-    });
-    this.descriptionCtrlBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Video Description & Notes" }
-    });
-    (0, import_obsidian13.setIcon)(this.descriptionCtrlBtn, "file-text");
-    this.descriptionCtrlBtn.addEventListener("click", () => {
-      this.toggleSideTab("description");
     });
     const loopBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn",
@@ -3556,7 +3634,6 @@ var MediaScribeEmbeddedWidget = class {
     this.playlistToggleBtn?.toggleClass("is-active", tab === "playlist");
     this.transcriptBtn?.toggleClass("is-active", tab === "transcript");
     this.descriptionBtn?.toggleClass("is-active", tab === "description");
-    this.descriptionCtrlBtn?.toggleClass("is-active", tab === "description");
     if (tab === "transcript") {
       this.transcriptPanel?.setVisible(true);
     } else if (tab === "description") {
@@ -3575,7 +3652,6 @@ var MediaScribeEmbeddedWidget = class {
     this.playlistToggleBtn?.removeClass("is-active");
     this.transcriptBtn?.removeClass("is-active");
     this.descriptionBtn?.removeClass("is-active");
-    this.descriptionCtrlBtn?.removeClass("is-active");
     if (!skipSave) {
       this.saveSidePanelState();
     }
@@ -3946,9 +4022,13 @@ ${propertyKey}: "${item.source.url}"
     }
   }
   updatePlaylistUI() {
-    const isPlaylist = Boolean(this.currentSource?.isPlaylist);
+    const isPlaylist = Boolean(this.currentSource?.isPlaylist && (this.currentSource?.playlistItems?.length ?? 0) > 0);
     this.prevVideoBtn?.toggleClass("is-hidden", !isPlaylist);
     this.nextVideoBtn?.toggleClass("is-hidden", !isPlaylist);
+    if (this.playlistToggleBtn) {
+      this.playlistToggleBtn.toggleClass("is-hidden", !isPlaylist);
+      this.playlistToggleBtn.style.display = isPlaylist ? "" : "none";
+    }
     this.updateAutoplayUI();
     this.renderPlaylistItems();
     this.updateSidePanelTabs();
@@ -4278,66 +4358,149 @@ ${propertyKey}: "${item.source.url}"
     let isDragging = false;
     let startY = 0;
     let startX = 0;
+    let lastY = 0;
+    let lastX = 0;
     let startH = this.settings.embeddedPlayerHeight || 340;
     let startW = this.settings.embeddedDockWidth || 420;
-    const onMouseMove = (e) => {
-      if (!isDragging) return;
-      const pos = this.settings.embeddedPosition || "top";
+    const applyResize = (clientX, clientY) => {
+      const pos = this.getEffectivePosition();
       if (pos === "top") {
-        const delta = e.clientY - startY;
-        const containerW = this.playerContainerEl?.clientWidth || window.innerWidth;
-        const maxAllowedByWidth = Math.floor(containerW * 9 / 16);
-        const maxH = Math.min(650, Math.floor(window.innerHeight * 0.85), Math.max(200, maxAllowedByWidth));
-        const newHeight = Math.max(160, Math.min(maxH, startH + delta));
+        const delta = clientY - startY;
+        const maxH = Math.min(750, Math.floor(window.innerHeight * 0.85));
+        const minH = 140;
+        const newHeight = Math.max(minH, Math.min(maxH, startH + delta));
         this.hostEl.style.setProperty("--mediascribe-embed-height", `${newHeight}px`);
       } else {
         let delta = 0;
         if (pos === "vertical_left") {
-          delta = e.clientX - startX;
+          delta = clientX - startX;
         } else {
-          delta = startX - e.clientX;
+          delta = startX - clientX;
         }
-        const maxW = Math.floor(window.innerWidth * 0.65);
-        const newWidth = Math.max(280, Math.min(maxW, startW + delta));
+        const maxW = Math.floor(window.innerWidth * 0.8);
+        const minW = Math.min(180, Math.floor(window.innerWidth * 0.25));
+        const newWidth = Math.max(minW, Math.min(maxW, startW + delta));
         this.hostEl.style.setProperty("--mediascribe-dock-width", `${newWidth}px`);
         this.markdownView.contentEl.style.setProperty("--mediascribe-dock-width", `${newWidth}px`);
       }
     };
-    const onMouseUp = async (e) => {
-      if (!isDragging) return;
-      isDragging = false;
-      handle.removeClass("is-dragging");
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-      const pos = this.settings.embeddedPosition || "top";
+    const commitResize = async (clientX, clientY) => {
+      const pos = this.getEffectivePosition();
       if (pos === "top") {
-        const delta = e.clientY - startY;
-        const containerW = this.playerContainerEl?.clientWidth || window.innerWidth;
-        const maxAllowedByWidth = Math.floor(containerW * 9 / 16);
-        const maxH = Math.min(650, Math.floor(window.innerHeight * 0.85), Math.max(200, maxAllowedByWidth));
-        const finalHeight = Math.max(160, Math.min(maxH, startH + delta));
+        const delta = clientY - startY;
+        const maxH = Math.min(750, Math.floor(window.innerHeight * 0.85));
+        const minH = 140;
+        const finalHeight = Math.max(minH, Math.min(maxH, startH + delta));
         this.settings.embeddedPlayerHeight = Math.round(finalHeight);
       } else {
         let delta = 0;
         if (pos === "vertical_left") {
-          delta = e.clientX - startX;
+          delta = clientX - startX;
         } else {
-          delta = startX - e.clientX;
+          delta = startX - clientX;
         }
-        const maxW = Math.floor(window.innerWidth * 0.65);
-        const finalWidth = Math.max(280, Math.min(maxW, startW + delta));
+        const maxW = Math.floor(window.innerWidth * 0.8);
+        const minW = Math.min(180, Math.floor(window.innerWidth * 0.25));
+        const finalWidth = Math.max(minW, Math.min(maxW, startW + delta));
         this.settings.embeddedDockWidth = Math.round(finalWidth);
       }
       await this.onSettingsChange(this.settings);
     };
-    handle.addEventListener("mousedown", (e) => {
-      e.preventDefault();
+    const startDrag = (clientX, clientY) => {
       isDragging = true;
-      startY = e.clientY;
-      startX = e.clientX;
+      startY = clientY;
+      startX = clientX;
+      lastY = clientY;
+      lastX = clientX;
       startH = parseInt(this.hostEl.style.getPropertyValue("--mediascribe-embed-height") || "", 10) || this.settings.embeddedPlayerHeight || 340;
       startW = parseInt(this.hostEl.style.getPropertyValue("--mediascribe-dock-width") || "", 10) || this.settings.embeddedDockWidth || 420;
       handle.addClass("is-dragging");
+      document.body.addClass("mediascribe-is-resizing");
+    };
+    const endDrag = async (clientX, clientY) => {
+      if (!isDragging) return;
+      isDragging = false;
+      handle.removeClass("is-dragging");
+      document.body.removeClass("mediascribe-is-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchEnd);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      await commitResize(clientX, clientY);
+    };
+    const onPointerMove = (e) => {
+      if (!isDragging) return;
+      e.preventDefault();
+      lastX = e.clientX;
+      lastY = e.clientY;
+      applyResize(e.clientX, e.clientY);
+    };
+    const onPointerUp = async (e) => {
+      try {
+        if (handle.hasPointerCapture(e.pointerId)) {
+          handle.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+      }
+      await endDrag(e.clientX || lastX, e.clientY || lastY);
+    };
+    const onTouchMove = (e) => {
+      if (!isDragging) return;
+      const touch = e.touches[0];
+      if (!touch) return;
+      e.preventDefault();
+      lastX = touch.clientX;
+      lastY = touch.clientY;
+      applyResize(touch.clientX, touch.clientY);
+    };
+    const onTouchEnd = async (e) => {
+      const touch = e.changedTouches?.[0];
+      const cx = touch ? touch.clientX : lastX;
+      const cy = touch ? touch.clientY : lastY;
+      await endDrag(cx, cy);
+    };
+    const onMouseMove = (e) => {
+      if (!isDragging) return;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      applyResize(e.clientX, e.clientY);
+    };
+    const onMouseUp = async (e) => {
+      await endDrag(e.clientX || lastX, e.clientY || lastY);
+    };
+    handle.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 && e.pointerType === "mouse") return;
+      e.preventDefault();
+      e.stopPropagation();
+      startDrag(e.clientX, e.clientY);
+      try {
+        handle.setPointerCapture(e.pointerId);
+      } catch {
+      }
+      window.addEventListener("pointermove", onPointerMove, { passive: false });
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("pointercancel", onPointerUp);
+    });
+    handle.addEventListener("touchstart", (e) => {
+      if (isDragging) return;
+      const touch = e.touches[0];
+      if (!touch) return;
+      e.preventDefault();
+      e.stopPropagation();
+      startDrag(touch.clientX, touch.clientY);
+      window.addEventListener("touchmove", onTouchMove, { passive: false });
+      window.addEventListener("touchend", onTouchEnd);
+      window.addEventListener("touchcancel", onTouchEnd);
+    }, { passive: false });
+    handle.addEventListener("mousedown", (e) => {
+      if (isDragging || e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      startDrag(e.clientX, e.clientY);
       window.addEventListener("mousemove", onMouseMove);
       window.addEventListener("mouseup", onMouseUp);
     });
@@ -4358,6 +4521,8 @@ ${propertyKey}: "${item.source.url}"
     }
   }
   destroy() {
+    window.removeEventListener("resize", this.onResizeHandler);
+    window.removeEventListener("orientationchange", this.onResizeHandler);
     this.saveCurrentPosition();
     this.ambientGlowService.destroy();
     if (this.player) {
@@ -4510,8 +4675,18 @@ var EmbeddedPlayerManager = class {
   }
   async mountWithPosition(view, position, seekToSeconds, shouldPlay = false, sourceToLoad) {
     const file = view.file;
-    this.settings.embeddedPosition = position;
-    await this.onSettingsChange(this.settings);
+    let effectivePos = position;
+    if (!import_obsidian14.Platform.isDesktop) {
+      const isLandscape = window.innerWidth > window.innerHeight;
+      if (isLandscape) {
+        effectivePos = position === "vertical_left" ? "vertical_left" : "vertical_right";
+      } else {
+        effectivePos = "top";
+      }
+    } else {
+      this.settings.embeddedPosition = effectivePos;
+      await this.onSettingsChange(this.settings);
+    }
     const source = sourceToLoad || (file ? await this.detector.extractMediaFromNote(
       file,
       this.settings.mediaPropertyNames,
@@ -4548,7 +4723,7 @@ var EmbeddedPlayerManager = class {
     );
     this.activeWidgets.set(view, widget);
     await widget.loadMedia(source);
-    await widget.setPosition(position);
+    await widget.setPosition(effectivePos);
     const player = widget.getActivePlayer();
     if (player && typeof seekToSeconds === "number" && seekToSeconds > 0) {
       player.seekTo(seekToSeconds);

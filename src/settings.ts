@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import MediaScribePlugin from "./main";
 import { PlayerLayoutMode, TimestampFormat } from "./types";
 import { FolderSuggest } from "./ui/folderSuggest";
@@ -34,31 +34,63 @@ export class MediaScribeSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Embedded Player Position")
-      .setDesc("Choose where the player docks when embedded inside a note.")
+      .setName(
+        Platform.isDesktop
+          ? "Embedded Player Position"
+          : "Embedded Player Position (Landscape)"
+      )
+      .setDesc(
+        Platform.isDesktop
+          ? "Choose where the player docks when embedded inside a note."
+          : "On mobile and tablet, portrait mode docks at the top. In landscape mode, choose whether the player appears on the right or left (top option is disabled in landscape)."
+      )
       .addDropdown((dropdown) => {
-        dropdown
-          .addOption("top", "Top (Horizontal)")
-          .addOption("vertical_right", "Vertical Split (Right side)")
-          .addOption("vertical_left", "Vertical Split (Left side)")
-          .setValue(this.plugin.settings.embeddedPosition || "top")
-          .onChange(async (val) => {
-            this.plugin.settings.embeddedPosition = val as any;
-            await this.plugin.saveSettings();
-            this.plugin.embeddedManager.syncActiveView();
-          });
+        if (Platform.isDesktop) {
+          dropdown
+            .addOption("top", "Top (Horizontal)")
+            .addOption("vertical_right", "Vertical Split (Right side)")
+            .addOption("vertical_left", "Vertical Split (Left side)")
+            .setValue(this.plugin.settings.embeddedPosition || "top");
+        } else {
+          dropdown
+            .addOption("vertical_right", "Vertical Split (Right side)")
+            .addOption("vertical_left", "Vertical Split (Left side)")
+            .setValue(this.plugin.settings.embeddedPosition === "vertical_left" ? "vertical_left" : "vertical_right");
+        }
+        dropdown.onChange(async (val) => {
+          this.plugin.settings.embeddedPosition = val as any;
+          await this.plugin.saveSettings();
+          this.plugin.embeddedManager.syncActiveView();
+        });
       });
 
+    if (Platform.isDesktop) {
+      new Setting(containerEl)
+        .setName("Vertical Dock Width")
+        .setDesc("Width in pixels when docked vertically on the left or right side of a note.")
+        .addSlider((slider) => {
+          slider
+            .setLimits(280, 650, 10)
+            .setValue(this.plugin.settings.embeddedDockWidth || 420)
+            .setDynamicTooltip()
+            .onChange(async (val) => {
+              this.plugin.settings.embeddedDockWidth = val;
+              await this.plugin.saveSettings();
+              this.plugin.embeddedManager.syncActiveView();
+            });
+        });
+    }
+
     new Setting(containerEl)
-      .setName("Vertical Dock Width")
-      .setDesc("Width in pixels when docked vertically on the left or right side of a note.")
+      .setName("Mobile Top Margin")
+      .setDesc("Extra margin spacing (in pixels) added at the top of the embedded player on mobile devices so it stays clear of the phone notification/status bar and Obsidian top navigation UI.")
       .addSlider((slider) => {
         slider
-          .setLimits(280, 650, 10)
-          .setValue(this.plugin.settings.embeddedDockWidth || 420)
+          .setLimits(0, 120, 2)
+          .setValue(this.plugin.settings.mobileTopMargin ?? 48)
           .setDynamicTooltip()
           .onChange(async (val) => {
-            this.plugin.settings.embeddedDockWidth = val;
+            this.plugin.settings.mobileTopMargin = val;
             await this.plugin.saveSettings();
             this.plugin.embeddedManager.syncActiveView();
           });

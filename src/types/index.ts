@@ -87,6 +87,7 @@ export interface MediaScribeSettings {
   playlistNoteFolderLocation: "current_folder" | "specific_folder";
   playlistNoteSpecificFolder: string;
   playlistAutoplay: boolean;
+  mobileTopMargin?: number;
 }
 
 export interface StoredSidePanelState {
@@ -129,7 +130,8 @@ export const DEFAULT_SETTINGS: MediaScribeSettings = {
   playlistNoteProperty: "video_link",
   playlistNoteFolderLocation: "current_folder",
   playlistNoteSpecificFolder: "",
-  playlistAutoplay: true
+  playlistAutoplay: true,
+  mobileTopMargin: 48
 };
 
 export type PlayerEventType = 

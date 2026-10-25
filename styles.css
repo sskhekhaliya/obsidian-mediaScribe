@@ -1013,6 +1013,47 @@
   overflow: hidden !important;
 }
 
+/* Mobile Safe Area & Top UI Clearance (prevents overlapping notification bar and Obsidian UI in both portrait and horizontal modes) */
+body.is-phone .mediascribe-embedded-host,
+body.is-mobile:not(.is-tablet) .mediascribe-embedded-host {
+  margin-top: calc(max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px)) + var(--mediascribe-mobile-top-margin, 48px)) !important;
+  top: calc(max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px)) + var(--mediascribe-mobile-top-margin, 48px)) !important;
+}
+
+body.is-tablet .mediascribe-embedded-host {
+  margin-top: max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px), 6px) !important;
+  top: max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px), 6px) !important;
+}
+
+/* In vertical mode on mobile (horizontal/landscape side-by-side dock), account for the top space in height */
+body.is-phone .mediascribe-embedded-host.mediascribe-vertical-mode,
+body.is-mobile:not(.is-tablet) .mediascribe-embedded-host.mediascribe-vertical-mode {
+  height: calc(100% - max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px)) - var(--mediascribe-mobile-top-margin, 48px)) !important;
+  max-height: calc(100% - max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px)) - var(--mediascribe-mobile-top-margin, 48px)) !important;
+}
+
+body.is-tablet .mediascribe-embedded-host.mediascribe-vertical-mode {
+  height: calc(100% - max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px), 6px)) !important;
+  max-height: calc(100% - max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px), 6px)) !important;
+}
+
+/* Mobile landscape safe areas for left/right notch */
+body.is-mobile .workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left .mediascribe-embedded-host {
+  padding-left: max(env(safe-area-inset-left, 0px), var(--safe-area-inset-left, 0px)) !important;
+}
+
+body.is-mobile .workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right .mediascribe-embedded-host {
+  padding-right: max(env(safe-area-inset-right, 0px), var(--safe-area-inset-right, 0px)) !important;
+}
+
+body.is-phone .workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left .mediascribe-embedded-host,
+body.is-phone .workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right .mediascribe-embedded-host,
+body.is-mobile .workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left .mediascribe-embedded-host,
+body.is-mobile .workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right .mediascribe-embedded-host {
+  min-width: 180px !important;
+  max-width: 80% !important;
+}
+
 /* Inside Vertical Mode Host */
 .mediascribe-embedded-host.mediascribe-vertical-mode {
   display: flex !important;
@@ -1108,10 +1149,24 @@
   width: 6px !important;
   height: 100% !important;
   cursor: col-resize !important;
-  z-index: 20 !important;
+  z-index: 25 !important;
+  touch-action: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
   background: transparent !important;
   border-right: 2px solid transparent !important;
   margin-top: 0 !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left .mediascribe-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -14px;
+  right: -14px;
+  touch-action: none !important;
+  z-index: 30;
 }
 
 .workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-left .mediascribe-resize-handle:hover,
@@ -1129,10 +1184,24 @@
   width: 6px !important;
   height: 100% !important;
   cursor: col-resize !important;
-  z-index: 20 !important;
+  z-index: 25 !important;
+  touch-action: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
   background: transparent !important;
   border-left: 2px solid transparent !important;
   margin-top: 0 !important;
+}
+
+.workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right .mediascribe-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -14px;
+  right: -14px;
+  touch-action: none !important;
+  z-index: 30;
 }
 
 .workspace-leaf-content[data-type="markdown"] .view-content.mediascribe-dock-right .mediascribe-resize-handle:hover,
@@ -1277,11 +1346,36 @@
   transition: background 0.15s ease;
   position: relative;
   margin-top: -2px;
+  touch-action: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  z-index: 25 !important;
+}
+
+.mediascribe-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: -12px;
+  bottom: -12px;
+  left: 0;
+  right: 0;
+  touch-action: none !important;
+  z-index: 30;
 }
 
 .mediascribe-resize-handle:hover,
 .mediascribe-resize-handle.is-dragging {
   background: var(--interactive-accent);
+}
+
+body.mediascribe-is-resizing,
+body.mediascribe-is-resizing * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+body.mediascribe-is-resizing iframe {
+  pointer-events: none !important;
 }
 
 /* Playlist Badge */

@@ -26,6 +26,11 @@ export class MediaDetector {
       clean = clean.slice(1, -1).trim();
     }
 
+    // Strip embed exclamation mark if present: ![[file.mp4]] -> [[file.mp4]] or ![Title](url) -> [Title](url)
+    if (clean.startsWith("!") && (clean.startsWith("![[") || clean.startsWith("!["))) {
+      clean = clean.slice(1).trim();
+    }
+
     // Strip wikilink brackets if present: [[file.mp4]] -> file.mp4
     if (clean.startsWith("[[") && clean.endsWith("]]")) {
       clean = clean.slice(2, -2).split("|")[0].trim();
@@ -78,6 +83,11 @@ export class MediaDetector {
     // Strip wrapping quotes if any
     if ((clean.startsWith('"') && clean.endsWith('"')) || (clean.startsWith("'") && clean.endsWith("'"))) {
       clean = clean.slice(1, -1).trim();
+    }
+
+    // Strip embed exclamation mark if present: ![[file.mp4]] -> [[file.mp4]] or ![Title](url) -> [Title](url)
+    if (clean.startsWith("!") && (clean.startsWith("![[") || clean.startsWith("!["))) {
+      clean = clean.slice(1).trim();
     }
 
     // Strip wikilink brackets if present: [[file.mp4]] -> file.mp4
@@ -422,7 +432,8 @@ export class MediaDetector {
   }
 
   /**
-   * Scans a note's frontmatter and body to find media links or playlists.
+   * Scans a note's frontmatter properties to find media links or playlists.
+   * Only looks at frontmatter properties (never scans the note body).
    * Asynchronously verifies remote Content-Type for web URLs if verifyContentType is enabled.
    */
   public async extractMediaFromNote(
@@ -432,75 +443,57 @@ export class MediaDetector {
     verifyContentType: boolean = true
   ): Promise<MediaSourceInfo | null> {
     const cache = this.app.metadataCache.getFileCache(file);
-    if (!cache) return null;
+    if (!cache || !cache.frontmatter) return null;
 
     const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty)
       ? [additionalProperty, ...mediaPropertyNames]
       : mediaPropertyNames;
 
-    // 1. Check frontmatter
-    if (cache.frontmatter) {
-      for (const prop of propList) {
-        const val = cache.frontmatter[prop];
-        if (!val) continue;
+    // Check frontmatter properties only
+    for (const prop of propList) {
+      const val = cache.frontmatter[prop];
+      if (!val) continue;
 
-        // Check if value is a YAML list of videos (Local/Mixed Playlist)
-        if (Array.isArray(val) && val.length > 0) {
-          const items: { title: string; source: MediaSourceInfo }[] = [];
-          for (let idx = 0; idx < val.length; idx++) {
-            const item = val[idx];
-            let rawUrl = "";
-            let customTitle = "";
-            if (typeof item === "string") {
-              rawUrl = item;
-            } else if (item && typeof item === "object") {
-              rawUrl = item.url || item.link || item.media || "";
-              customTitle = item.title || "";
-            }
+      // Check if value is a YAML list of videos (Local/Mixed Playlist)
+      if (Array.isArray(val) && val.length > 0) {
+        const items: { title: string; source: MediaSourceInfo }[] = [];
+        for (let idx = 0; idx < val.length; idx++) {
+          const item = val[idx];
+          let rawUrl = "";
+          let customTitle = "";
+          if (typeof item === "string") {
+            rawUrl = item;
+          } else if (item && typeof item === "object") {
+            rawUrl = item.url || item.link || item.media || "";
+            customTitle = item.title || "";
+          }
 
-            if (rawUrl) {
-              const resolved = await this.resolveSource(rawUrl, file.path, verifyContentType);
-              if (resolved) {
-                const itemTitle = customTitle || resolved.title || (resolved.videoId ? `YouTube (${resolved.videoId})` : `Part ${idx + 1}`);
-                resolved.title = itemTitle;
-                items.push({
-                  title: itemTitle,
-                  source: resolved
-                });
-              }
+          if (rawUrl) {
+            const resolved = await this.resolveSource(rawUrl, file.path, verifyContentType);
+            if (resolved) {
+              const itemTitle = customTitle || resolved.title || (resolved.videoId ? `YouTube (${resolved.videoId})` : `Part ${idx + 1}`);
+              resolved.title = itemTitle;
+              items.push({
+                title: itemTitle,
+                source: resolved
+              });
             }
           }
-          if (items.length > 0) {
-            const first = items[0].source;
-            return {
-              ...first,
-              isPlaylist: true,
-              playlistIndex: 0,
-              playlistItems: items
-            };
-          }
         }
-
-        // Single string property
-        if (typeof val === "string") {
-          const info = await this.resolveSource(val, file.path, verifyContentType);
-          if (info) return info;
+        if (items.length > 0) {
+          const first = items[0].source;
+          return {
+            ...first,
+            isPlaylist: true,
+            playlistIndex: 0,
+            playlistItems: items
+          };
         }
       }
-    }
 
-    // 2. Check embedded links in note (e.g. ![[lecture.mp4]])
-    if (cache.embeds) {
-      for (const embed of cache.embeds) {
-        const info = await this.resolveSource(embed.link, file.path, verifyContentType);
-        if (info) return info;
-      }
-    }
-
-    // 3. Check regular links (e.g. YouTube links)
-    if (cache.links) {
-      for (const link of cache.links) {
-        const info = await this.resolveSource(link.link, file.path, verifyContentType);
+      // Single string or numeric property
+      if (typeof val === "string" || typeof val === "number") {
+        const info = await this.resolveSource(String(val), file.path, verifyContentType);
         if (info) return info;
       }
     }
@@ -509,7 +502,8 @@ export class MediaDetector {
   }
 
   /**
-   * Fast synchronous check to find media in note without waiting on network probes.
+   * Fast synchronous check to find media in note frontmatter properties without waiting on network probes.
+   * Only looks at frontmatter properties (never scans the note body).
    */
   public extractMediaFromNoteSync(
     file: TFile,
@@ -517,45 +511,29 @@ export class MediaDetector {
     additionalProperty?: string
   ): MediaSourceInfo | null {
     const cache = this.app.metadataCache.getFileCache(file);
-    if (!cache) return null;
+    if (!cache || !cache.frontmatter) return null;
 
     const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty)
       ? [additionalProperty, ...mediaPropertyNames]
       : mediaPropertyNames;
 
-    if (cache.frontmatter) {
-      for (const prop of propList) {
-        const val = cache.frontmatter[prop];
-        if (!val) continue;
+    for (const prop of propList) {
+      const val = cache.frontmatter[prop];
+      if (!val) continue;
 
-        if (Array.isArray(val) && val.length > 0) {
-          for (let idx = 0; idx < val.length; idx++) {
-            const item = val[idx];
-            const rawUrl = typeof item === "string" ? item : (item?.url || item?.link || item?.media || "");
-            if (rawUrl) {
-              const resolved = this.resolveSourceSync(rawUrl, file.path);
-              if (resolved) return resolved;
-            }
+      if (Array.isArray(val) && val.length > 0) {
+        for (let idx = 0; idx < val.length; idx++) {
+          const item = val[idx];
+          const rawUrl = typeof item === "string" ? item : (item?.url || item?.link || item?.media || "");
+          if (rawUrl) {
+            const resolved = this.resolveSourceSync(rawUrl, file.path);
+            if (resolved) return resolved;
           }
         }
-
-        if (typeof val === "string") {
-          const info = this.resolveSourceSync(val, file.path);
-          if (info) return info;
-        }
       }
-    }
 
-    if (cache.embeds) {
-      for (const embed of cache.embeds) {
-        const info = this.resolveSourceSync(embed.link, file.path);
-        if (info) return info;
-      }
-    }
-
-    if (cache.links) {
-      for (const link of cache.links) {
-        const info = this.resolveSourceSync(link.link, file.path);
+      if (typeof val === "string" || typeof val === "number") {
+        const info = this.resolveSourceSync(String(val), file.path);
         if (info) return info;
       }
     }
@@ -564,7 +542,8 @@ export class MediaDetector {
   }
 
   /**
-   * Fast check to determine if a note has candidate media properties or embeds
+   * Fast check to determine if a note has candidate media properties in frontmatter.
+   * Only returns true if a recognized property in frontmatter has a value.
    */
   public hasMediaCandidate(
     file: TFile,
@@ -572,20 +551,16 @@ export class MediaDetector {
     additionalProperty?: string
   ): boolean {
     const cache = this.app.metadataCache.getFileCache(file);
-    if (!cache) return false;
+    if (!cache || !cache.frontmatter) return false;
 
     const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty)
       ? [additionalProperty, ...mediaPropertyNames]
       : mediaPropertyNames;
 
-    if (cache.frontmatter) {
-      for (const prop of propList) {
-        const val = cache.frontmatter[prop];
-        if (val) return true;
-      }
+    for (const prop of propList) {
+      const val = cache.frontmatter[prop];
+      if (val) return true;
     }
-
-    if (cache.embeds && cache.embeds.length > 0) return true;
 
     return false;
   }

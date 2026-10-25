@@ -1,4 +1,4 @@
-import { App, MarkdownView, Menu, Notice, normalizePath, setIcon } from "obsidian";
+import { App, MarkdownView, Menu, Notice, Platform, normalizePath, setIcon } from "obsidian";
 import { EmbeddedPosition, IMediaPlayer, MediaScribeSettings, MediaSourceInfo, PlaylistItem, StoredSidePanelState } from "../types";
 import { YouTubePlayer } from "../players/youtubePlayer";
 import { HTML5Player } from "../players/html5Player";
@@ -78,7 +78,17 @@ export class MediaScribeEmbeddedWidget {
   private descriptionViewEl: HTMLElement | null = null;
   private transcriptBtn: HTMLElement | null = null;
   private descriptionBtn: HTMLElement | null = null;
-  private descriptionCtrlBtn: HTMLElement | null = null;
+  private posBtn: HTMLButtonElement | null = null;
+  private lastAppliedPosition: EmbeddedPosition = "top";
+
+  private onResizeHandler = (): void => {
+    if (!Platform.isDesktop) {
+      const currentEffective = this.getEffectivePosition();
+      if (this.lastAppliedPosition !== currentEffective) {
+        this.applyPositionStyles();
+      }
+    }
+  };
 
   constructor(
     plugin: any,
@@ -112,30 +122,75 @@ export class MediaScribeEmbeddedWidget {
     const contentEl = this.markdownView.contentEl;
     contentEl.prepend(this.hostEl);
 
+    // Responsive orientation listener for mobile landscape / portrait switching
+    window.addEventListener("resize", this.onResizeHandler);
+    window.addEventListener("orientationchange", this.onResizeHandler);
+
     this.applyPositionStyles();
     this.render();
   }
 
+  public isMobileLandscape(): boolean {
+    if (!Platform.isMobile && !Platform.isPhone) {
+      return false;
+    }
+    return window.innerWidth > window.innerHeight;
+  }
+
+  public getEffectivePosition(): EmbeddedPosition {
+    if (Platform.isDesktop) {
+      return this.settings.embeddedPosition || "top";
+    }
+
+    // On mobile / tablet:
+    if (this.isMobileLandscape()) {
+      // In mobile landscape: dock at left or right, NO top option
+      if (this.settings.embeddedPosition === "vertical_left") {
+        return "vertical_left";
+      }
+      return "vertical_right";
+    }
+
+    // In mobile portrait: only horizontal top option
+    return "top";
+  }
+
   public applyPositionStyles(): void {
-    const pos = this.settings.embeddedPosition || "top";
+    const pos = this.getEffectivePosition();
+    this.lastAppliedPosition = pos;
     const contentEl = this.markdownView.contentEl;
+
+    // Apply mobile top margin variable on mobile (in both portrait and horizontal modes)
+    if (Platform.isMobile || Platform.isPhone) {
+      const topMargin = typeof this.settings.mobileTopMargin === "number" ? this.settings.mobileTopMargin : 48;
+      this.hostEl.style.setProperty("--mediascribe-mobile-top-margin", `${topMargin}px`);
+    } else {
+      this.hostEl.style.removeProperty("--mediascribe-mobile-top-margin");
+    }
 
     // Reset old classes
     contentEl.removeClass("mediascribe-dock-vertical", "mediascribe-dock-left", "mediascribe-dock-right");
     this.hostEl.removeClass("mediascribe-vertical-mode", "mediascribe-top-mode");
 
+    const isMobile = Platform.isMobile || Platform.isPhone;
+    const maxDockW = Math.floor(window.innerWidth * 0.80);
+    const minDockW = Math.min(180, Math.floor(window.innerWidth * 0.25));
+    const dockWidth = isMobile
+      ? Math.max(minDockW, Math.min(this.settings.embeddedDockWidth || 380, maxDockW))
+      : (this.settings.embeddedDockWidth || 420);
+
     if (pos === "vertical_left") {
       contentEl.addClass("mediascribe-dock-vertical", "mediascribe-dock-left");
       this.hostEl.addClass("mediascribe-vertical-mode");
       this.hostEl.style.removeProperty("--mediascribe-embed-height");
-      this.hostEl.style.setProperty("--mediascribe-dock-width", `${this.settings.embeddedDockWidth || 420}px`);
-      contentEl.style.setProperty("--mediascribe-dock-width", `${this.settings.embeddedDockWidth || 420}px`);
+      this.hostEl.style.setProperty("--mediascribe-dock-width", `${dockWidth}px`);
+      contentEl.style.setProperty("--mediascribe-dock-width", `${dockWidth}px`);
     } else if (pos === "vertical_right") {
       contentEl.addClass("mediascribe-dock-vertical", "mediascribe-dock-right");
       this.hostEl.addClass("mediascribe-vertical-mode");
       this.hostEl.style.removeProperty("--mediascribe-embed-height");
-      this.hostEl.style.setProperty("--mediascribe-dock-width", `${this.settings.embeddedDockWidth || 420}px`);
-      contentEl.style.setProperty("--mediascribe-dock-width", `${this.settings.embeddedDockWidth || 420}px`);
+      this.hostEl.style.setProperty("--mediascribe-dock-width", `${dockWidth}px`);
+      contentEl.style.setProperty("--mediascribe-dock-width", `${dockWidth}px`);
     } else {
       // Default: top horizontal
       this.hostEl.addClass("mediascribe-top-mode");
@@ -144,12 +199,25 @@ export class MediaScribeEmbeddedWidget {
       this.hostEl.style.setProperty("--mediascribe-embed-height", `${this.settings.embeddedPlayerHeight || 340}px`);
     }
 
+    this.updatePositionButtonVisibility();
     this.updateSidePanelPosition();
+  }
+
+  private updatePositionButtonVisibility(): void {
+    if (!this.posBtn) return;
+    if (Platform.isDesktop) {
+      this.posBtn.style.display = "";
+    } else if (this.isMobileLandscape()) {
+      this.posBtn.style.display = "";
+    } else {
+      // In portrait mobile, only 1 position exists, so switch position button is not available
+      this.posBtn.style.display = "none";
+    }
   }
 
   private updateSidePanelPosition(): void {
     if (!this.sidePanelEl) return;
-    const pos = this.settings.embeddedPosition || "top";
+    const pos = this.getEffectivePosition();
     if (pos === "top") {
       if (this.playerAreaEl && this.sidePanelEl.parentElement !== this.playerAreaEl) {
         this.playerAreaEl.appendChild(this.sidePanelEl);
@@ -166,6 +234,19 @@ export class MediaScribeEmbeddedWidget {
   }
 
   public async setPosition(pos: EmbeddedPosition): Promise<void> {
+    if (!Platform.isDesktop) {
+      if (this.isMobileLandscape()) {
+        if (pos === "top") {
+          new Notice("MediaScribe: In mobile landscape, player must dock at left or right.");
+          return;
+        }
+      } else {
+        if (pos !== "top") {
+          new Notice("MediaScribe: In portrait, player docks at the top.");
+          return;
+        }
+      }
+    }
     this.settings.embeddedPosition = pos;
     await this.onSettingsChange(this.settings);
     this.applyPositionStyles();
@@ -375,6 +456,15 @@ export class MediaScribeEmbeddedWidget {
         this.playlistBadgeEl.addClass("is-hidden");
       }
     }
+
+    const hasPlaylist = Boolean(this.currentSource.isPlaylist && (this.currentSource.playlistItems?.length ?? 0) > 0);
+    if (this.playlistToggleBtn) {
+      this.playlistToggleBtn.style.display = hasPlaylist ? "" : "none";
+      this.playlistToggleBtn.toggleClass("is-hidden", !hasPlaylist);
+    }
+    if (!hasPlaylist && this.isSidePanelOpen && this.activeSideTab === "playlist") {
+      this.closeSidePanel();
+    }
   }
 
   private render(): void {
@@ -417,7 +507,7 @@ export class MediaScribeEmbeddedWidget {
 
     const actions = header.createDiv({ cls: "mediascribe-header-actions" });
 
-    // Playlist Drawer Toggle
+    // Playlist Drawer Toggle (invisible if playlist is not available)
     this.playlistToggleBtn = actions.createEl("button", {
       cls: "mediascribe-btn-icon",
       attr: { title: "Toggle Playlist" }
@@ -426,6 +516,9 @@ export class MediaScribeEmbeddedWidget {
     this.playlistToggleBtn.addEventListener("click", () => {
       this.toggleSideTab("playlist");
     });
+    const hasPlaylist = Boolean(this.currentSource?.isPlaylist && (this.currentSource?.playlistItems?.length ?? 0) > 0);
+    this.playlistToggleBtn.style.display = hasPlaylist ? "" : "none";
+    this.playlistToggleBtn.toggleClass("is-hidden", !hasPlaylist);
 
     // Description Drawer Toggle
     this.descriptionBtn = actions.createEl("button", {
@@ -461,15 +554,16 @@ export class MediaScribeEmbeddedWidget {
       await this.onSettingsChange(this.settings);
     });
 
-    // Position / Layout Switcher Button
-    const posBtn = actions.createEl("button", {
+    // Position / Layout Switcher Button (hidden in portrait mobile since only 1 position exists)
+    this.posBtn = actions.createEl("button", {
       cls: "mediascribe-btn-icon",
       attr: { title: "Switch Position (Top, Vertical, Sidebar)" }
     });
-    setIcon(posBtn, "layout");
-    posBtn.addEventListener("click", (e: MouseEvent) => {
+    setIcon(this.posBtn, "layout");
+    this.posBtn.addEventListener("click", (e: MouseEvent) => {
       this.showPositionMenu(e);
     });
+    this.updatePositionButtonVisibility();
 
     // Collapse / Expand Video Player Toggle
     const collapseBtn = actions.createEl("button", {
@@ -498,28 +592,53 @@ export class MediaScribeEmbeddedWidget {
 
   private showPositionMenu(e: MouseEvent): void {
     const menu = new Menu();
-    const currentPos = this.settings.embeddedPosition || "top";
+    const currentPos = this.getEffectivePosition();
 
-    menu.addItem((item) => {
-      item.setTitle("Top (Horizontal)")
-        .setIcon("rows")
-        .setChecked(currentPos === "top")
-        .onClick(() => this.setPosition("top"));
-    });
+    if (Platform.isDesktop) {
+      menu.addItem((item) => {
+        item.setTitle("Top (Horizontal)")
+          .setIcon("rows")
+          .setChecked(currentPos === "top")
+          .onClick(() => this.setPosition("top"));
+      });
 
-    menu.addItem((item) => {
-      item.setTitle("Vertical Split (Right side)")
-        .setIcon("panel-right")
-        .setChecked(currentPos === "vertical_right")
-        .onClick(() => this.setPosition("vertical_right"));
-    });
+      menu.addItem((item) => {
+        item.setTitle("Vertical Split (Right side)")
+          .setIcon("panel-right")
+          .setChecked(currentPos === "vertical_right")
+          .onClick(() => this.setPosition("vertical_right"));
+      });
 
-    menu.addItem((item) => {
-      item.setTitle("Vertical Split (Left side)")
-        .setIcon("panel-left")
-        .setChecked(currentPos === "vertical_left")
-        .onClick(() => this.setPosition("vertical_left"));
-    });
+      menu.addItem((item) => {
+        item.setTitle("Vertical Split (Left side)")
+          .setIcon("panel-left")
+          .setChecked(currentPos === "vertical_left")
+          .onClick(() => this.setPosition("vertical_left"));
+      });
+    } else if (this.isMobileLandscape()) {
+      // In mobile landscape: dock at left or right, NO top option
+      menu.addItem((item) => {
+        item.setTitle("Vertical Split (Right side)")
+          .setIcon("panel-right")
+          .setChecked(currentPos === "vertical_right")
+          .onClick(() => this.setPosition("vertical_right"));
+      });
+
+      menu.addItem((item) => {
+        item.setTitle("Vertical Split (Left side)")
+          .setIcon("panel-left")
+          .setChecked(currentPos === "vertical_left")
+          .onClick(() => this.setPosition("vertical_left"));
+      });
+    } else {
+      // In mobile portrait: only horizontal top option
+      menu.addItem((item) => {
+        item.setTitle("Top (Horizontal)")
+          .setIcon("rows")
+          .setChecked(currentPos === "top")
+          .onClick(() => this.setPosition("top"));
+      });
+    }
 
     menu.showAtMouseEvent(e);
   }
@@ -733,10 +852,10 @@ export class MediaScribeEmbeddedWidget {
       this.timestampService.insertCurrentTimestamp(this.markdownView);
     });
 
-    // Frame Screenshot
+    // Simple Screenshot Button
     const snapBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn",
-      attr: { title: "Capture Video Frame (Ctrl+Shift+S)" }
+      attr: { title: "Take Screenshot (Ctrl+Shift+S)" }
     });
     setIcon(snapBtn, "camera");
     snapBtn.addEventListener("click", () => this.captureScreenshot());
@@ -749,16 +868,6 @@ export class MediaScribeEmbeddedWidget {
     setIcon(this.transcriptBtn, "subtitles");
     this.transcriptBtn.addEventListener("click", () => {
       this.toggleSideTab("transcript");
-    });
-
-    // Description button in controls
-    this.descriptionCtrlBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Video Description & Notes" }
-    });
-    setIcon(this.descriptionCtrlBtn, "file-text");
-    this.descriptionCtrlBtn.addEventListener("click", () => {
-      this.toggleSideTab("description");
     });
 
     // A-B Loop Toggle
@@ -814,7 +923,6 @@ export class MediaScribeEmbeddedWidget {
     this.playlistToggleBtn?.toggleClass("is-active", tab === "playlist");
     this.transcriptBtn?.toggleClass("is-active", tab === "transcript");
     this.descriptionBtn?.toggleClass("is-active", tab === "description");
-    this.descriptionCtrlBtn?.toggleClass("is-active", tab === "description");
 
     if (tab === "transcript") {
       this.transcriptPanel?.setVisible(true);
@@ -836,7 +944,6 @@ export class MediaScribeEmbeddedWidget {
     this.playlistToggleBtn?.removeClass("is-active");
     this.transcriptBtn?.removeClass("is-active");
     this.descriptionBtn?.removeClass("is-active");
-    this.descriptionCtrlBtn?.removeClass("is-active");
 
     if (!skipSave) {
       this.saveSidePanelState();
@@ -1296,9 +1403,13 @@ export class MediaScribeEmbeddedWidget {
   }
 
   private updatePlaylistUI(): void {
-    const isPlaylist = Boolean(this.currentSource?.isPlaylist);
+    const isPlaylist = Boolean(this.currentSource?.isPlaylist && (this.currentSource?.playlistItems?.length ?? 0) > 0);
     this.prevVideoBtn?.toggleClass("is-hidden", !isPlaylist);
     this.nextVideoBtn?.toggleClass("is-hidden", !isPlaylist);
+    if (this.playlistToggleBtn) {
+      this.playlistToggleBtn.toggleClass("is-hidden", !isPlaylist);
+      this.playlistToggleBtn.style.display = isPlaylist ? "" : "none";
+    }
     this.updateAutoplayUI();
     this.renderPlaylistItems();
     this.updateSidePanelTabs();
@@ -1687,72 +1798,174 @@ export class MediaScribeEmbeddedWidget {
     let isDragging = false;
     let startY = 0;
     let startX = 0;
+    let lastY = 0;
+    let lastX = 0;
     let startH = this.settings.embeddedPlayerHeight || 340;
     let startW = this.settings.embeddedDockWidth || 420;
 
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isDragging) return;
-      const pos = this.settings.embeddedPosition || "top";
+    const applyResize = (clientX: number, clientY: number) => {
+      const pos = this.getEffectivePosition();
 
       if (pos === "top") {
-        const delta = e.clientY - startY;
-        const containerW = this.playerContainerEl?.clientWidth || window.innerWidth;
-        const maxAllowedByWidth = Math.floor(containerW * 9 / 16);
-        const maxH = Math.min(650, Math.floor(window.innerHeight * 0.85), Math.max(200, maxAllowedByWidth));
-        const newHeight = Math.max(160, Math.min(maxH, startH + delta));
+        const delta = clientY - startY;
+        const maxH = Math.min(750, Math.floor(window.innerHeight * 0.85));
+        const minH = 140;
+        const newHeight = Math.max(minH, Math.min(maxH, startH + delta));
         this.hostEl.style.setProperty("--mediascribe-embed-height", `${newHeight}px`);
       } else {
         // Horizontal width drag for vertical dock
         let delta = 0;
         if (pos === "vertical_left") {
-          delta = e.clientX - startX;
+          delta = clientX - startX;
         } else {
-          delta = startX - e.clientX;
+          delta = startX - clientX;
         }
-        const maxW = Math.floor(window.innerWidth * 0.65);
-        const newWidth = Math.max(280, Math.min(maxW, startW + delta));
+        const maxW = Math.floor(window.innerWidth * 0.80);
+        const minW = Math.min(180, Math.floor(window.innerWidth * 0.25));
+        const newWidth = Math.max(minW, Math.min(maxW, startW + delta));
         this.hostEl.style.setProperty("--mediascribe-dock-width", `${newWidth}px`);
         this.markdownView.contentEl.style.setProperty("--mediascribe-dock-width", `${newWidth}px`);
       }
     };
 
-    const onMouseUp = async (e: MouseEvent) => {
-      if (!isDragging) return;
-      isDragging = false;
-      handle.removeClass("is-dragging");
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-
-      const pos = this.settings.embeddedPosition || "top";
+    const commitResize = async (clientX: number, clientY: number) => {
+      const pos = this.getEffectivePosition();
       if (pos === "top") {
-        const delta = e.clientY - startY;
-        const containerW = this.playerContainerEl?.clientWidth || window.innerWidth;
-        const maxAllowedByWidth = Math.floor(containerW * 9 / 16);
-        const maxH = Math.min(650, Math.floor(window.innerHeight * 0.85), Math.max(200, maxAllowedByWidth));
-        const finalHeight = Math.max(160, Math.min(maxH, startH + delta));
+        const delta = clientY - startY;
+        const maxH = Math.min(750, Math.floor(window.innerHeight * 0.85));
+        const minH = 140;
+        const finalHeight = Math.max(minH, Math.min(maxH, startH + delta));
         this.settings.embeddedPlayerHeight = Math.round(finalHeight);
       } else {
         let delta = 0;
         if (pos === "vertical_left") {
-          delta = e.clientX - startX;
+          delta = clientX - startX;
         } else {
-          delta = startX - e.clientX;
+          delta = startX - clientX;
         }
-        const maxW = Math.floor(window.innerWidth * 0.65);
-        const finalWidth = Math.max(280, Math.min(maxW, startW + delta));
+        const maxW = Math.floor(window.innerWidth * 0.80);
+        const minW = Math.min(180, Math.floor(window.innerWidth * 0.25));
+        const finalWidth = Math.max(minW, Math.min(maxW, startW + delta));
         this.settings.embeddedDockWidth = Math.round(finalWidth);
       }
       await this.onSettingsChange(this.settings);
     };
 
-    handle.addEventListener("mousedown", (e) => {
-      e.preventDefault();
+    const startDrag = (clientX: number, clientY: number) => {
       isDragging = true;
-      startY = e.clientY;
-      startX = e.clientX;
+      startY = clientY;
+      startX = clientX;
+      lastY = clientY;
+      lastX = clientX;
       startH = parseInt(this.hostEl.style.getPropertyValue("--mediascribe-embed-height") || "", 10) || this.settings.embeddedPlayerHeight || 340;
       startW = parseInt(this.hostEl.style.getPropertyValue("--mediascribe-dock-width") || "", 10) || this.settings.embeddedDockWidth || 420;
       handle.addClass("is-dragging");
+      document.body.addClass("mediascribe-is-resizing");
+    };
+
+    const endDrag = async (clientX: number, clientY: number) => {
+      if (!isDragging) return;
+      isDragging = false;
+      handle.removeClass("is-dragging");
+      document.body.removeClass("mediascribe-is-resizing");
+
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchEnd);
+
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+
+      await commitResize(clientX, clientY);
+    };
+
+    // Pointer Events
+    const onPointerMove = (e: PointerEvent) => {
+      if (!isDragging) return;
+      e.preventDefault();
+      lastX = e.clientX;
+      lastY = e.clientY;
+      applyResize(e.clientX, e.clientY);
+    };
+
+    const onPointerUp = async (e: PointerEvent) => {
+      try {
+        if (handle.hasPointerCapture(e.pointerId)) {
+          handle.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore
+      }
+      await endDrag(e.clientX || lastX, e.clientY || lastY);
+    };
+
+    // Touch Events
+    const onTouchMove = (e: TouchEvent) => {
+      if (!isDragging) return;
+      const touch = e.touches[0];
+      if (!touch) return;
+      e.preventDefault();
+      lastX = touch.clientX;
+      lastY = touch.clientY;
+      applyResize(touch.clientX, touch.clientY);
+    };
+
+    const onTouchEnd = async (e: TouchEvent) => {
+      const touch = e.changedTouches?.[0];
+      const cx = touch ? touch.clientX : lastX;
+      const cy = touch ? touch.clientY : lastY;
+      await endDrag(cx, cy);
+    };
+
+    // Mouse Events fallback
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging) return;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      applyResize(e.clientX, e.clientY);
+    };
+
+    const onMouseUp = async (e: MouseEvent) => {
+      await endDrag(e.clientX || lastX, e.clientY || lastY);
+    };
+
+    // Listeners on the handle
+    handle.addEventListener("pointerdown", (e: PointerEvent) => {
+      if (e.button !== 0 && e.pointerType === "mouse") return;
+      e.preventDefault();
+      e.stopPropagation();
+      startDrag(e.clientX, e.clientY);
+      try {
+        handle.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+      window.addEventListener("pointermove", onPointerMove, { passive: false });
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("pointercancel", onPointerUp);
+    });
+
+    handle.addEventListener("touchstart", (e: TouchEvent) => {
+      if (isDragging) return;
+      const touch = e.touches[0];
+      if (!touch) return;
+      e.preventDefault();
+      e.stopPropagation();
+      startDrag(touch.clientX, touch.clientY);
+      window.addEventListener("touchmove", onTouchMove, { passive: false });
+      window.addEventListener("touchend", onTouchEnd);
+      window.addEventListener("touchcancel", onTouchEnd);
+    }, { passive: false });
+
+    handle.addEventListener("mousedown", (e: MouseEvent) => {
+      if (isDragging || e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      startDrag(e.clientX, e.clientY);
       window.addEventListener("mousemove", onMouseMove);
       window.addEventListener("mouseup", onMouseUp);
     });
@@ -1777,6 +1990,8 @@ export class MediaScribeEmbeddedWidget {
   }
 
   public destroy(): void {
+    window.removeEventListener("resize", this.onResizeHandler);
+    window.removeEventListener("orientationchange", this.onResizeHandler);
     this.saveCurrentPosition();
     this.ambientGlowService.destroy();
     if (this.player) {

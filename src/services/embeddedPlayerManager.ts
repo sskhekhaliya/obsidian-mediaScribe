@@ -1,4 +1,4 @@
-import { App, MarkdownView, Notice } from "obsidian";
+import { App, MarkdownView, Notice, Platform } from "obsidian";
 import { IMediaPlayer, MediaScribeSettings, MediaSourceInfo } from "../types";
 import { MediaDetector } from "./mediaDetector";
 import { ScreenshotService } from "./screenshotService";
@@ -181,8 +181,18 @@ export class EmbeddedPlayerManager {
     sourceToLoad?: MediaSourceInfo
   ): Promise<void> {
     const file = view.file;
-    this.settings.embeddedPosition = position;
-    await this.onSettingsChange(this.settings);
+    let effectivePos: "top" | "vertical_right" | "vertical_left" = position;
+    if (!Platform.isDesktop) {
+      const isLandscape = window.innerWidth > window.innerHeight;
+      if (isLandscape) {
+        effectivePos = position === "vertical_left" ? "vertical_left" : "vertical_right";
+      } else {
+        effectivePos = "top";
+      }
+    } else {
+      this.settings.embeddedPosition = effectivePos;
+      await this.onSettingsChange(this.settings);
+    }
 
     const source = sourceToLoad || (file ? await this.detector.extractMediaFromNote(
       file,
@@ -223,7 +233,7 @@ export class EmbeddedPlayerManager {
     this.activeWidgets.set(view, widget);
 
     await widget.loadMedia(source);
-    await widget.setPosition(position);
+    await widget.setPosition(effectivePos);
 
     const player = widget.getActivePlayer();
     if (player && typeof seekToSeconds === "number" && seekToSeconds > 0) {
