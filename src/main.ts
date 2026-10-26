@@ -371,6 +371,15 @@ export default class MediaScribePlugin extends Plugin {
       const target = evt.target as HTMLElement;
       if (!target) return;
 
+      // 0. Do NOT treat clicks inside inline code, code blocks, or comments as timestamps!
+      if (
+        target.closest(
+          "code, pre, .cm-inline-code, .HyperMD-codeblock, .cm-formatting-code, .cm-comment"
+        )
+      ) {
+        return;
+      }
+
       // 1. Custom MediaScribe timestamp link (e.g. from transcript panel or pill)
       if (target.classList.contains("mediascribe-timestamp-link")) {
         evt.preventDefault();
@@ -412,25 +421,29 @@ export default class MediaScribePlugin extends Plugin {
         if (cmLine) {
           const lineText = cmLine.textContent || "";
           const timestamps = extractTimestampsFromText(lineText);
-          if (timestamps.length > 0) {
+          const match = timestamps.find((ts) => ts.displayText === text || text.includes(ts.displayText));
+          if (match) {
             evt.preventDefault();
             evt.stopPropagation();
-            this.handleTimestampJump(timestamps[0].displayText);
+            this.handleTimestampJump(match.displayText);
             return;
           }
         }
       }
 
-      // 4. Fallback for any click directly on a timestamp within editor line
+      // 4. Live Preview: Plain formatted timestamp text clicked within editor line
       const cmLine = target.closest(".cm-line");
       if (cmLine) {
         const directText = target.textContent?.trim() || "";
-        const sec = parseTimestamp(directText);
-        if (sec !== null) {
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.handleTimestampJump(directText);
-          return;
+        // Only trigger for explicitly formatted timestamps (e.g. [01:23] or 01:23:45)
+        if (/^(?:\[|\()?(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\))?$/.test(directText)) {
+          const sec = parseTimestamp(directText);
+          if (sec !== null) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.handleTimestampJump(directText);
+            return;
+          }
         }
       }
     }, true);
@@ -482,7 +495,10 @@ export default class MediaScribePlugin extends Plugin {
       let currentNode: Text | null = null;
       while ((currentNode = walker.nextNode() as Text)) {
         if (/\[\d{1,2}:\d{2}(?::\d{2})?\]/.test(currentNode.nodeValue || "")) {
-          if (currentNode.parentElement && !currentNode.parentElement.closest(".mediascribe-timestamp-link")) {
+          if (
+            currentNode.parentElement &&
+            !currentNode.parentElement.closest(".mediascribe-timestamp-link, code, pre")
+          ) {
             nodesToReplace.push({ node: currentNode, parent: currentNode.parentNode! });
           }
         }

@@ -260,7 +260,7 @@ export class MediaDetector {
       let initialTime: number | undefined;
       const tMatch = input.match(/[?&#](?:t|start)=([^&#]+)/i);
       if (tMatch && tMatch[1]) {
-        const parsed = parseTimestamp(tMatch[1]);
+        const parsed = parseTimestamp(tMatch[1], true);
         if (parsed !== null) initialTime = parsed;
       }
 
@@ -317,7 +317,7 @@ export class MediaDetector {
       let initialTime: number | undefined;
       const tMatch = input.match(/#t=([^&#]+)/i);
       if (tMatch && tMatch[1]) {
-        const parsed = parseTimestamp(tMatch[1]);
+        const parsed = parseTimestamp(tMatch[1], true);
         if (parsed !== null) initialTime = parsed;
       }
 

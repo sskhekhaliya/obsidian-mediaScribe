@@ -367,7 +367,7 @@ function formatSeconds(totalSeconds, forceHours = false) {
   }
   return `${pad(minutes)}:${pad(seconds)}`;
 }
-function parseTimestamp(input) {
+function parseTimestamp(input, allowBareSeconds = false) {
   if (!input) return null;
   let str = input.trim();
   if (str.startsWith("(") && str.endsWith(")")) {
@@ -376,7 +376,7 @@ function parseTimestamp(input) {
   const mdMatch = str.match(/^\[([^\]]+)\](?:\(([^)]*)\))?$/);
   if (mdMatch) {
     if (mdMatch[2]) {
-      const fromUrl = parseTimestamp(mdMatch[2]);
+      const fromUrl = parseTimestamp(mdMatch[2], true);
       if (fromUrl !== null) return fromUrl;
     }
     const fromLabel = parseTimestamp(mdMatch[1]);
@@ -385,7 +385,7 @@ function parseTimestamp(input) {
   const wikiMatch = str.match(/^\[\[(?:#t=([0-9hms]+)\|)?([^\]]+)\]\]$/i);
   if (wikiMatch) {
     if (wikiMatch[1]) {
-      const fromUrl = parseTimestamp(wikiMatch[1]);
+      const fromUrl = parseTimestamp(wikiMatch[1], true);
       if (fromUrl !== null) return fromUrl;
     }
     const fromLabel = parseTimestamp(wikiMatch[2]);
@@ -393,16 +393,19 @@ function parseTimestamp(input) {
   }
   const urlParamMatch = str.match(/[?&#]t=([0-9hms]+)/i);
   if (urlParamMatch && urlParamMatch[1]) {
-    const fromParam = parseTimestamp(urlParamMatch[1]);
+    const fromParam = parseTimestamp(urlParamMatch[1], true);
     if (fromParam !== null) return fromParam;
   }
+  let hasExplicitPrefix = false;
   if (str.toLowerCase().startsWith("#t=")) {
     str = str.substring(3).trim();
+    hasExplicitPrefix = true;
   } else if (str.toLowerCase().startsWith("t=")) {
     str = str.substring(2).trim();
+    hasExplicitPrefix = true;
   }
   const hmPattern = /^(?:(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?)$/i;
-  if (str.includes("h") || str.includes("m") || str.includes("s")) {
+  if (str.includes("h") || str.includes("m") || str.includes("s") && (hasExplicitPrefix || allowBareSeconds || /\d+[mh]/i.test(str))) {
     const match = str.match(hmPattern);
     if (match && (match[1] || match[2] || match[3])) {
       const h = parseInt(match[1] || "0", 10);
@@ -413,7 +416,10 @@ function parseTimestamp(input) {
   }
   const directSec = str.match(/^(\d+)$/);
   if (directSec) {
-    return parseInt(directSec[1], 10);
+    if (hasExplicitPrefix || allowBareSeconds) {
+      return parseInt(directSec[1], 10);
+    }
+    return null;
   }
   const colons = str.match(/^(?:\[|\()?(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\]|\))?$/);
   if (colons) {
@@ -434,11 +440,22 @@ function extractTimestampsFromText(text) {
   const results = [];
   const lines = text.split("\n");
   let charOffset = 0;
+  let inCodeBlock = false;
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
+    if (line.trim().startsWith("```")) {
+      inCodeBlock = !inCodeBlock;
+      charOffset += line.length + 1;
+      continue;
+    }
+    if (inCodeBlock) {
+      charOffset += line.length + 1;
+      continue;
+    }
+    const lineForMatching = line.replace(/`[^`]+`/g, (m) => " ".repeat(m.length));
     const regex = /(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\](?:\([^)]*\))?|\[\[(?:#t=[^|]+\|)?(\d{1,2}:\d{2}(?::\d{2})?)\]\]|(?<=\s|^)(\d{1,2}:\d{2}(?::\d{2})?)(?=\s|$|[.,!?]))/g;
     let match;
-    while ((match = regex.exec(line)) !== null) {
+    while ((match = regex.exec(lineForMatching)) !== null) {
       const timeStr = match[1] || match[2] || match[3];
       if (timeStr) {
         const seconds = parseTimestamp(timeStr);
@@ -645,7 +662,7 @@ var MediaDetector = class {
       let initialTime;
       const tMatch = input.match(/[?&#](?:t|start)=([^&#]+)/i);
       if (tMatch && tMatch[1]) {
-        const parsed = parseTimestamp(tMatch[1]);
+        const parsed = parseTimestamp(tMatch[1], true);
         if (parsed !== null) initialTime = parsed;
       }
       let playlistIndex;
@@ -692,7 +709,7 @@ var MediaDetector = class {
       let initialTime;
       const tMatch = input.match(/#t=([^&#]+)/i);
       if (tMatch && tMatch[1]) {
-        const parsed = parseTimestamp(tMatch[1]);
+        const parsed = parseTimestamp(tMatch[1], true);
         if (parsed !== null) initialTime = parsed;
       }
       return {
@@ -5095,6 +5112,11 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
     this.registerDomEvent(document, "click", (evt) => {
       const target = evt.target;
       if (!target) return;
+      if (target.closest(
+        "code, pre, .cm-inline-code, .HyperMD-codeblock, .cm-formatting-code, .cm-comment"
+      )) {
+        return;
+      }
       if (target.classList.contains("mediascribe-timestamp-link")) {
         evt.preventDefault();
         evt.stopPropagation();
@@ -5127,10 +5149,11 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
         if (cmLine2) {
           const lineText = cmLine2.textContent || "";
           const timestamps = extractTimestampsFromText(lineText);
-          if (timestamps.length > 0) {
+          const match = timestamps.find((ts) => ts.displayText === text || text.includes(ts.displayText));
+          if (match) {
             evt.preventDefault();
             evt.stopPropagation();
-            this.handleTimestampJump(timestamps[0].displayText);
+            this.handleTimestampJump(match.displayText);
             return;
           }
         }
@@ -5138,12 +5161,14 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
       const cmLine = target.closest(".cm-line");
       if (cmLine) {
         const directText = target.textContent?.trim() || "";
-        const sec = parseTimestamp(directText);
-        if (sec !== null) {
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.handleTimestampJump(directText);
-          return;
+        if (/^(?:\[|\()?(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\))?$/.test(directText)) {
+          const sec = parseTimestamp(directText);
+          if (sec !== null) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.handleTimestampJump(directText);
+            return;
+          }
         }
       }
     }, true);
@@ -5186,7 +5211,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
       let currentNode = null;
       while (currentNode = walker.nextNode()) {
         if (/\[\d{1,2}:\d{2}(?::\d{2})?\]/.test(currentNode.nodeValue || "")) {
-          if (currentNode.parentElement && !currentNode.parentElement.closest(".mediascribe-timestamp-link")) {
+          if (currentNode.parentElement && !currentNode.parentElement.closest(".mediascribe-timestamp-link, code, pre")) {
             nodesToReplace.push({ node: currentNode, parent: currentNode.parentNode });
           }
         }

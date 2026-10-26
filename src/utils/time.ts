@@ -29,7 +29,7 @@ export function formatSeconds(totalSeconds: number, forceHours: boolean = false)
  * - "t=2m30s" -> 150
  * - "125s" -> 125
  */
-export function parseTimestamp(input: string): number | null {
+export function parseTimestamp(input: string, allowBareSeconds: boolean = false): number | null {
   if (!input) return null;
   let str = input.trim();
 
@@ -42,7 +42,7 @@ export function parseTimestamp(input: string): number | null {
   const mdMatch = str.match(/^\[([^\]]+)\](?:\(([^)]*)\))?$/);
   if (mdMatch) {
     if (mdMatch[2]) {
-      const fromUrl = parseTimestamp(mdMatch[2]);
+      const fromUrl = parseTimestamp(mdMatch[2], true);
       if (fromUrl !== null) return fromUrl;
     }
     const fromLabel = parseTimestamp(mdMatch[1]);
@@ -53,7 +53,7 @@ export function parseTimestamp(input: string): number | null {
   const wikiMatch = str.match(/^\[\[(?:#t=([0-9hms]+)\|)?([^\]]+)\]\]$/i);
   if (wikiMatch) {
     if (wikiMatch[1]) {
-      const fromUrl = parseTimestamp(wikiMatch[1]);
+      const fromUrl = parseTimestamp(wikiMatch[1], true);
       if (fromUrl !== null) return fromUrl;
     }
     const fromLabel = parseTimestamp(wikiMatch[2]);
@@ -63,20 +63,27 @@ export function parseTimestamp(input: string): number | null {
   // Extract t= parameter from URLs: e.g. https://youtu.be/xxx?t=115 or video.mp4#t=115
   const urlParamMatch = str.match(/[?&#]t=([0-9hms]+)/i);
   if (urlParamMatch && urlParamMatch[1]) {
-    const fromParam = parseTimestamp(urlParamMatch[1]);
+    const fromParam = parseTimestamp(urlParamMatch[1], true);
     if (fromParam !== null) return fromParam;
   }
 
   // Strip #t= or t= prefix
+  let hasExplicitPrefix = false;
   if (str.toLowerCase().startsWith("#t=")) {
     str = str.substring(3).trim();
+    hasExplicitPrefix = true;
   } else if (str.toLowerCase().startsWith("t=")) {
     str = str.substring(2).trim();
+    hasExplicitPrefix = true;
   }
 
   // Match t=1h2m3s or 1h2m3s
   const hmPattern = /^(?:(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?)$/i;
-  if (str.includes("h") || str.includes("m") || str.includes("s")) {
+  if (
+    str.includes("h") ||
+    str.includes("m") ||
+    (str.includes("s") && (hasExplicitPrefix || allowBareSeconds || /\d+[mh]/i.test(str)))
+  ) {
     const match = str.match(hmPattern);
     if (match && (match[1] || match[2] || match[3])) {
       const h = parseInt(match[1] || "0", 10);
@@ -86,10 +93,13 @@ export function parseTimestamp(input: string): number | null {
     }
   }
 
-  // Match direct integer seconds: "123"
+  // Match direct integer seconds: ONLY if explicitly prefixed (t=..., #t=...) or explicitly allowed
   const directSec = str.match(/^(\d+)$/);
   if (directSec) {
-    return parseInt(directSec[1], 10);
+    if (hasExplicitPrefix || allowBareSeconds) {
+      return parseInt(directSec[1], 10);
+    }
+    return null;
   }
 
   // Match HH:MM:SS or MM:SS or H:MM:SS (with optional brackets)
@@ -138,20 +148,36 @@ export interface ExtractedTimestamp {
 }
 
 /**
- * Extracts all timestamp occurrences from a markdown text
+ * Extracts all timestamp occurrences from a markdown text, ignoring code blocks and inline code
  */
 export function extractTimestampsFromText(text: string): ExtractedTimestamp[] {
   const results: ExtractedTimestamp[] = [];
   const lines = text.split("\n");
   let charOffset = 0;
+  let inCodeBlock = false;
 
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
+
+    // Check fenced code blocks
+    if (line.trim().startsWith("```")) {
+      inCodeBlock = !inCodeBlock;
+      charOffset += line.length + 1;
+      continue;
+    }
+    if (inCodeBlock) {
+      charOffset += line.length + 1;
+      continue;
+    }
+
+    // Mask out inline code spans (`...`) so timestamps inside inline code are never extracted
+    const lineForMatching = line.replace(/`[^`]+`/g, (m) => " ".repeat(m.length));
+
     // Find timestamps in this line
     const regex = /(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\](?:\([^)]*\))?|\[\[(?:#t=[^|]+\|)?(\d{1,2}:\d{2}(?::\d{2})?)\]\]|(?<=\s|^)(\d{1,2}:\d{2}(?::\d{2})?)(?=\s|$|[.,!?]))/g;
     let match: RegExpExecArray | null;
 
-    while ((match = regex.exec(line)) !== null) {
+    while ((match = regex.exec(lineForMatching)) !== null) {
       const timeStr = match[1] || match[2] || match[3];
       if (timeStr) {
         const seconds = parseTimestamp(timeStr);
