@@ -11,7 +11,7 @@ import { TranscriptPanel } from "./TranscriptPanel";
 import { TimelineMarkers } from "./TimelineMarkers";
 import { formatSeconds, parseTimestamp } from "../utils/time";
 import { fetchYouTubeTitle, fetchYouTubeVideoMetadata, fetchYouTubePlaylistItems, getCachedYouTubeTitle } from "../utils/youtube";
-import { setLucideXIcon, setDynamicTooltip } from "../utils/hotkey";
+import { setDynamicTooltip } from "../utils/hotkey";
 
 export class MediaScribeEmbeddedWidget {
   private plugin: any;
@@ -584,7 +584,7 @@ export class MediaScribeEmbeddedWidget {
       cls: "mediascribe-btn-icon",
       attr: { title: "Close Media Player" }
     });
-    setLucideXIcon(closeBtn);
+    setIcon(closeBtn, "x");
     closeBtn.addEventListener("click", () => {
       this.destroy();
       new Notice("MediaScribe: Player closed. Click ribbon icon, timestamp, or run 'Toggle media player' to reopen.");

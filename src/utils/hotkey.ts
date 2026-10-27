@@ -130,12 +130,9 @@ export function setDynamicTooltip(
 }
 
 /**
- * Renders the clean, standard Lucide "X" cross icon inside the given element,
- * matching the second screenshot.
- * Does not rely on setIcon('x') to prevent conflicts with plugins that might override global icon IDs.
+ * Renders the default Obsidian "x" close icon inside the given element.
  */
 export function setLucideXIcon(el: HTMLElement): void {
-  el.empty();
-  el.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svg-icon lucide-x"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+  setIcon(el, "x");
 }
 
