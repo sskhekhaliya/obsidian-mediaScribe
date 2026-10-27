@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => MediaScribePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian15 = require("obsidian");
+var import_obsidian16 = require("obsidian");
 
 // src/types/index.ts
 var DEFAULT_SETTINGS = {
@@ -1774,10 +1774,10 @@ var TranscriptService = class {
 };
 
 // src/services/embeddedPlayerManager.ts
-var import_obsidian14 = require("obsidian");
+var import_obsidian15 = require("obsidian");
 
 // src/ui/MediaScribeEmbeddedWidget.ts
-var import_obsidian13 = require("obsidian");
+var import_obsidian14 = require("obsidian");
 
 // src/players/youtubePlayer.ts
 var import_obsidian9 = require("obsidian");
@@ -2946,6 +2946,92 @@ var TimelineMarkers = class {
   }
 };
 
+// src/utils/hotkey.ts
+var import_obsidian13 = require("obsidian");
+function formatHotkey(hotkey) {
+  if (!hotkey) return "";
+  const isMac = import_obsidian13.Platform.isMacOS;
+  const modMap = isMac ? { Mod: "Cmd", Meta: "Cmd", Ctrl: "Ctrl", Alt: "Opt", Shift: "Shift" } : { Mod: "Ctrl", Meta: "Win", Ctrl: "Ctrl", Alt: "Alt", Shift: "Shift" };
+  const parts = [];
+  if (hotkey.modifiers && Array.isArray(hotkey.modifiers)) {
+    for (const mod of hotkey.modifiers) {
+      parts.push(modMap[mod] || mod);
+    }
+  }
+  if (hotkey.key) {
+    let keyStr = hotkey.key;
+    if (keyStr.length === 1) {
+      keyStr = keyStr.toUpperCase();
+    } else if (keyStr === "ArrowUp") keyStr = "Up";
+    else if (keyStr === "ArrowDown") keyStr = "Down";
+    else if (keyStr === "ArrowLeft") keyStr = "Left";
+    else if (keyStr === "ArrowRight") keyStr = "Right";
+    else if (keyStr === " " || keyStr.toLowerCase() === "space") keyStr = "Space";
+    else if (keyStr === "Escape") keyStr = "Esc";
+    parts.push(keyStr);
+  }
+  return parts.join("+");
+}
+function getCommandHotkeyString(app, commandSubId, fallbackDefault) {
+  try {
+    const hotkeyManager = app.hotkeyManager;
+    const fullId = commandSubId.includes(":") ? commandSubId : `mediascribe:${commandSubId}`;
+    let hotkeys;
+    if (hotkeyManager?.customKeys) {
+      if (fullId in hotkeyManager.customKeys) {
+        hotkeys = hotkeyManager.customKeys[fullId];
+      } else if (commandSubId in hotkeyManager.customKeys) {
+        hotkeys = hotkeyManager.customKeys[commandSubId];
+      }
+    }
+    if (hotkeys === void 0) {
+      if (hotkeyManager?.defaultKeys) {
+        if (fullId in hotkeyManager.defaultKeys) {
+          hotkeys = hotkeyManager.defaultKeys[fullId];
+        } else if (commandSubId in hotkeyManager.defaultKeys) {
+          hotkeys = hotkeyManager.defaultKeys[commandSubId];
+        }
+      }
+      if (!hotkeys) {
+        const cmd = app.commands?.findCommand?.(fullId) || app.commands?.findCommand?.(commandSubId) || app.commands?.commands?.[fullId] || app.commands?.commands?.[commandSubId];
+        if (cmd?.hotkeys) {
+          hotkeys = cmd.hotkeys;
+        }
+      }
+    }
+    if (Array.isArray(hotkeys)) {
+      if (hotkeys.length === 0) {
+        return "";
+      }
+      return formatHotkey(hotkeys[0]);
+    }
+  } catch (e) {
+    console.debug("MediaScribe: Failed to query hotkey", e);
+  }
+  return fallbackDefault || "";
+}
+function setDynamicTooltip(el, app, baseTitle, commandSubId, fallbackDefault) {
+  const updateTooltip = () => {
+    const text = typeof baseTitle === "function" ? baseTitle() : baseTitle;
+    let fullTitle = text;
+    if (commandSubId) {
+      const hotkeyStr = getCommandHotkeyString(app, commandSubId, fallbackDefault);
+      if (hotkeyStr) {
+        fullTitle = `${text} (${hotkeyStr})`;
+      }
+    }
+    el.setAttribute("title", fullTitle);
+    el.setAttribute("aria-label", fullTitle);
+  };
+  updateTooltip();
+  el.addEventListener("mouseenter", updateTooltip);
+  el.addEventListener("focus", updateTooltip);
+}
+function setLucideXIcon(el) {
+  el.empty();
+  el.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svg-icon lucide-x"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+}
+
 // src/ui/MediaScribeEmbeddedWidget.ts
 var MediaScribeEmbeddedWidget = class {
   constructor(plugin, markdownView, app, settings, screenshotService, timestampService, typingScribeService, transcriptService, onSettingsChange, onClose, onPlay) {
@@ -2997,7 +3083,7 @@ var MediaScribeEmbeddedWidget = class {
     this.posBtn = null;
     this.lastAppliedPosition = "top";
     this.onResizeHandler = () => {
-      if (!import_obsidian13.Platform.isDesktop) {
+      if (!import_obsidian14.Platform.isDesktop) {
         const currentEffective = this.getEffectivePosition();
         if (this.lastAppliedPosition !== currentEffective) {
           this.applyPositionStyles();
@@ -3025,13 +3111,13 @@ var MediaScribeEmbeddedWidget = class {
     this.render();
   }
   isMobileLandscape() {
-    if (!import_obsidian13.Platform.isMobile && !import_obsidian13.Platform.isPhone) {
+    if (!import_obsidian14.Platform.isMobile && !import_obsidian14.Platform.isPhone) {
       return false;
     }
     return window.innerWidth > window.innerHeight;
   }
   getEffectivePosition() {
-    if (import_obsidian13.Platform.isDesktop) {
+    if (import_obsidian14.Platform.isDesktop) {
       return this.settings.embeddedPosition || "top";
     }
     if (this.isMobileLandscape()) {
@@ -3046,7 +3132,7 @@ var MediaScribeEmbeddedWidget = class {
     const pos = this.getEffectivePosition();
     this.lastAppliedPosition = pos;
     const contentEl = this.markdownView.contentEl;
-    if (import_obsidian13.Platform.isMobile || import_obsidian13.Platform.isPhone) {
+    if (import_obsidian14.Platform.isMobile || import_obsidian14.Platform.isPhone) {
       const topMargin = typeof this.settings.mobileTopMargin === "number" ? this.settings.mobileTopMargin : 48;
       this.hostEl.style.setProperty("--mediascribe-mobile-top-margin", `${topMargin}px`);
     } else {
@@ -3054,7 +3140,7 @@ var MediaScribeEmbeddedWidget = class {
     }
     contentEl.removeClass("mediascribe-dock-vertical", "mediascribe-dock-left", "mediascribe-dock-right");
     this.hostEl.removeClass("mediascribe-vertical-mode", "mediascribe-top-mode");
-    const isMobile = import_obsidian13.Platform.isMobile || import_obsidian13.Platform.isPhone;
+    const isMobile = import_obsidian14.Platform.isMobile || import_obsidian14.Platform.isPhone;
     const maxDockW = Math.floor(window.innerWidth * 0.8);
     const minDockW = Math.min(180, Math.floor(window.innerWidth * 0.25));
     const dockWidth = isMobile ? Math.max(minDockW, Math.min(this.settings.embeddedDockWidth || 380, maxDockW)) : this.settings.embeddedDockWidth || 420;
@@ -3081,7 +3167,7 @@ var MediaScribeEmbeddedWidget = class {
   }
   updatePositionButtonVisibility() {
     if (!this.posBtn) return;
-    if (import_obsidian13.Platform.isDesktop) {
+    if (import_obsidian14.Platform.isDesktop) {
       this.posBtn.style.display = "";
     } else if (this.isMobileLandscape()) {
       this.posBtn.style.display = "";
@@ -3105,15 +3191,15 @@ var MediaScribeEmbeddedWidget = class {
     }
   }
   async setPosition(pos) {
-    if (!import_obsidian13.Platform.isDesktop) {
+    if (!import_obsidian14.Platform.isDesktop) {
       if (this.isMobileLandscape()) {
         if (pos === "top") {
-          new import_obsidian13.Notice("MediaScribe: In mobile landscape, player must dock at left or right.");
+          new import_obsidian14.Notice("MediaScribe: In mobile landscape, player must dock at left or right.");
           return;
         }
       } else {
         if (pos !== "top") {
-          new import_obsidian13.Notice("MediaScribe: In portrait, player docks at the top.");
+          new import_obsidian14.Notice("MediaScribe: In portrait, player docks at the top.");
           return;
         }
       }
@@ -3323,7 +3409,7 @@ var MediaScribeEmbeddedWidget = class {
     const header = parentEl.createDiv({ cls: "mediascribe-view-header mediascribe-embedded-header" });
     const infoSection = header.createDiv({ cls: "mediascribe-header-info" });
     const iconSpan = infoSection.createSpan({ cls: "mediascribe-header-icon" });
-    (0, import_obsidian13.setIcon)(iconSpan, "play-circle");
+    (0, import_obsidian14.setIcon)(iconSpan, "play-circle");
     this.headerTitleEl = infoSection.createSpan({ cls: "mediascribe-header-title" });
     this.headerTitleEl.setText("Loading Media...");
     this.playlistBadgeEl = infoSection.createSpan({ cls: "mediascribe-playlist-badge is-hidden" });
@@ -3333,7 +3419,7 @@ var MediaScribeEmbeddedWidget = class {
       cls: "mediascribe-btn-icon",
       attr: { title: "Toggle Playlist" }
     });
-    (0, import_obsidian13.setIcon)(this.playlistToggleBtn, "list");
+    (0, import_obsidian14.setIcon)(this.playlistToggleBtn, "list");
     this.playlistToggleBtn.addEventListener("click", () => {
       this.toggleSideTab("playlist");
     });
@@ -3344,7 +3430,7 @@ var MediaScribeEmbeddedWidget = class {
       cls: "mediascribe-btn-icon",
       attr: { title: "Toggle Video Description & Creator Info" }
     });
-    (0, import_obsidian13.setIcon)(this.descriptionBtn, "info");
+    (0, import_obsidian14.setIcon)(this.descriptionBtn, "info");
     this.descriptionBtn.addEventListener("click", () => {
       this.toggleSideTab("description");
     });
@@ -3352,16 +3438,16 @@ var MediaScribeEmbeddedWidget = class {
       cls: "mediascribe-btn-icon",
       attr: { title: "Refresh Note Timeline Markers" }
     });
-    (0, import_obsidian13.setIcon)(refreshPinsBtn, "bookmark");
+    (0, import_obsidian14.setIcon)(refreshPinsBtn, "bookmark");
     refreshPinsBtn.addEventListener("click", () => {
       this.timelineMarkers?.refresh();
-      new import_obsidian13.Notice("MediaScribe: Timeline markers refreshed.");
+      new import_obsidian14.Notice("MediaScribe: Timeline markers refreshed.");
     });
     const ambientBtn = actions.createEl("button", {
       cls: `mediascribe-btn-icon ${this.settings.enableAmbientMode ? "is-active" : ""}`,
       attr: { title: "Toggle Ambient Mode (Glow Effect)" }
     });
-    (0, import_obsidian13.setIcon)(ambientBtn, "sparkles");
+    (0, import_obsidian14.setIcon)(ambientBtn, "sparkles");
     ambientBtn.addEventListener("click", async () => {
       this.settings.enableAmbientMode = !this.settings.enableAmbientMode;
       ambientBtn.toggleClass("is-active", this.settings.enableAmbientMode);
@@ -3372,7 +3458,7 @@ var MediaScribeEmbeddedWidget = class {
       cls: "mediascribe-btn-icon",
       attr: { title: "Switch Position (Top, Vertical, Sidebar)" }
     });
-    (0, import_obsidian13.setIcon)(this.posBtn, "layout");
+    (0, import_obsidian14.setIcon)(this.posBtn, "layout");
     this.posBtn.addEventListener("click", (e) => {
       this.showPositionMenu(e);
     });
@@ -3381,27 +3467,27 @@ var MediaScribeEmbeddedWidget = class {
       cls: "mediascribe-btn-icon",
       attr: { title: "Minimize Player (Audio / Compact Mode)" }
     });
-    (0, import_obsidian13.setIcon)(collapseBtn, "chevron-up");
+    (0, import_obsidian14.setIcon)(collapseBtn, "chevron-up");
     collapseBtn.addEventListener("click", () => {
       this.isCollapsed = !this.isCollapsed;
       this.hostEl.toggleClass("is-collapsed", this.isCollapsed);
       collapseBtn.empty();
-      (0, import_obsidian13.setIcon)(collapseBtn, this.isCollapsed ? "chevron-down" : "chevron-up");
+      (0, import_obsidian14.setIcon)(collapseBtn, this.isCollapsed ? "chevron-down" : "chevron-up");
     });
     const closeBtn = actions.createEl("button", {
       cls: "mediascribe-btn-icon",
       attr: { title: "Close Media Player" }
     });
-    (0, import_obsidian13.setIcon)(closeBtn, "x");
+    setLucideXIcon(closeBtn);
     closeBtn.addEventListener("click", () => {
       this.destroy();
-      new import_obsidian13.Notice("MediaScribe: Player closed. Click ribbon icon, timestamp, or run 'Toggle media player' to reopen.");
+      new import_obsidian14.Notice("MediaScribe: Player closed. Click ribbon icon, timestamp, or run 'Toggle media player' to reopen.");
     });
   }
   showPositionMenu(e) {
-    const menu = new import_obsidian13.Menu();
+    const menu = new import_obsidian14.Menu();
     const currentPos = this.getEffectivePosition();
-    if (import_obsidian13.Platform.isDesktop) {
+    if (import_obsidian14.Platform.isDesktop) {
       menu.addItem((item) => {
         item.setTitle("Top (Horizontal)").setIcon("rows").setChecked(currentPos === "top").onClick(() => this.setPosition("top"));
       });
@@ -3465,10 +3551,10 @@ var MediaScribeEmbeddedWidget = class {
     const buttonsRow = this.controlsEl.createDiv({ cls: "mediascribe-buttons-row" });
     const leftControls = buttonsRow.createDiv({ cls: "mediascribe-ctrl-group mediascribe-ctrl-left" });
     this.playBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-play-btn",
-      attr: { title: "Play / Pause (Ctrl+K)" }
+      cls: "mediascribe-ctrl-btn mediascribe-play-btn"
     });
-    (0, import_obsidian13.setIcon)(this.playBtn, "play");
+    setDynamicTooltip(this.playBtn, this.app, "Play / Pause", "mediascribe-toggle-play", "Ctrl+K");
+    (0, import_obsidian14.setIcon)(this.playBtn, "play");
     this.playBtn.addEventListener("click", async () => {
       if (!this.player) return;
       if (this.hasEnded) {
@@ -3482,35 +3568,35 @@ var MediaScribeEmbeddedWidget = class {
       }
     });
     this.prevVideoBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn is-hidden",
-      attr: { title: "Previous Video (Ctrl+Alt+P)" }
+      cls: "mediascribe-ctrl-btn is-hidden"
     });
-    (0, import_obsidian13.setIcon)(this.prevVideoBtn, "skip-back");
+    setDynamicTooltip(this.prevVideoBtn, this.app, "Previous Video", "mediascribe-previous-video", "Ctrl+Alt+P");
+    (0, import_obsidian14.setIcon)(this.prevVideoBtn, "skip-back");
     this.prevVideoBtn.addEventListener("click", () => this.handlePreviousVideo());
     this.nextVideoBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn is-hidden",
-      attr: { title: "Next Video (Ctrl+Alt+N)" }
+      cls: "mediascribe-ctrl-btn is-hidden"
     });
-    (0, import_obsidian13.setIcon)(this.nextVideoBtn, "skip-forward");
+    setDynamicTooltip(this.nextVideoBtn, this.app, "Next Video", "mediascribe-next-video", "Ctrl+Alt+N");
+    (0, import_obsidian14.setIcon)(this.nextVideoBtn, "skip-forward");
     this.nextVideoBtn.addEventListener("click", () => this.handleNextVideo());
     const rewBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: `Rewind ${this.settings.jumpStepSeconds}s (Ctrl+J)` }
+      cls: "mediascribe-ctrl-btn"
     });
-    (0, import_obsidian13.setIcon)(rewBtn, "rotate-ccw");
+    setDynamicTooltip(rewBtn, this.app, () => `Rewind ${this.settings.jumpStepSeconds}s`, "mediascribe-jump-backward", "Ctrl+J");
+    (0, import_obsidian14.setIcon)(rewBtn, "rotate-ccw");
     rewBtn.addEventListener("click", () => this.player?.jump(-this.settings.jumpStepSeconds));
     const fwdBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: `Forward ${this.settings.jumpStepSeconds}s (Ctrl+L)` }
+      cls: "mediascribe-ctrl-btn"
     });
-    (0, import_obsidian13.setIcon)(fwdBtn, "rotate-cw");
+    setDynamicTooltip(fwdBtn, this.app, () => `Forward ${this.settings.jumpStepSeconds}s`, "mediascribe-jump-forward", "Ctrl+L");
+    (0, import_obsidian14.setIcon)(fwdBtn, "rotate-cw");
     fwdBtn.addEventListener("click", () => this.player?.jump(this.settings.jumpStepSeconds));
     const volumeGroup = leftControls.createDiv({ cls: "mediascribe-volume-group" });
     const volumeBtn = volumeGroup.createEl("button", {
       cls: "mediascribe-ctrl-btn mediascribe-volume-btn",
       attr: { title: "Mute / Unmute" }
     });
-    (0, import_obsidian13.setIcon)(volumeBtn, "volume-2");
+    (0, import_obsidian14.setIcon)(volumeBtn, "volume-2");
     const volumeSlider = volumeGroup.createEl("input", {
       type: "range",
       cls: "mediascribe-volume-slider",
@@ -3547,14 +3633,14 @@ var MediaScribeEmbeddedWidget = class {
         volumeSlider.style.setProperty("--volume-percent", "0%");
         this.player.setVolume(0);
         volumeBtn.empty();
-        (0, import_obsidian13.setIcon)(volumeBtn, "volume-x");
+        (0, import_obsidian14.setIcon)(volumeBtn, "volume-x");
       } else {
         const restore = prevVolume || 100;
         volumeSlider.value = restore.toString();
         volumeSlider.style.setProperty("--volume-percent", `${restore}%`);
         this.player.setVolume(restore);
         volumeBtn.empty();
-        (0, import_obsidian13.setIcon)(volumeBtn, "volume-2");
+        (0, import_obsidian14.setIcon)(volumeBtn, "volume-2");
       }
     });
     volumeSlider.addEventListener("input", () => {
@@ -3562,7 +3648,7 @@ var MediaScribeEmbeddedWidget = class {
       volumeSlider.style.setProperty("--volume-percent", `${val}%`);
       this.player?.setVolume(val);
       volumeBtn.empty();
-      (0, import_obsidian13.setIcon)(volumeBtn, val === 0 ? "volume-x" : val < 50 ? "volume-1" : "volume-2");
+      (0, import_obsidian14.setIcon)(volumeBtn, val === 0 ? "volume-x" : val < 50 ? "volume-1" : "volume-2");
     });
     const rightControls = buttonsRow.createDiv({ cls: "mediascribe-ctrl-group mediascribe-ctrl-right" });
     const speeds = [1, 1.25, 1.5, 1.75, 2, 0.5, 0.75];
@@ -3582,33 +3668,33 @@ var MediaScribeEmbeddedWidget = class {
       }
     });
     const scribeBtn = rightControls.createEl("button", {
-      cls: `mediascribe-ctrl-btn ${this.typingScribeService.active ? "is-active" : ""}`,
-      attr: { title: "Toggle Auto-Pause While Typing" }
+      cls: `mediascribe-ctrl-btn ${this.typingScribeService.active ? "is-active" : ""}`
     });
-    (0, import_obsidian13.setIcon)(scribeBtn, "pen-tool");
+    setDynamicTooltip(scribeBtn, this.app, "Toggle Auto-Pause While Typing", "mediascribe-toggle-typing-scribe");
+    (0, import_obsidian14.setIcon)(scribeBtn, "pen-tool");
     scribeBtn.addEventListener("click", () => {
       const active = this.typingScribeService.toggle();
       scribeBtn.toggleClass("is-active", active);
     });
     const timeBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Insert Timestamp (Ctrl+I)" }
+      cls: "mediascribe-ctrl-btn"
     });
-    (0, import_obsidian13.setIcon)(timeBtn, "clock");
+    setDynamicTooltip(timeBtn, this.app, "Insert Timestamp", "mediascribe-insert-timestamp", "Ctrl+I");
+    (0, import_obsidian14.setIcon)(timeBtn, "clock");
     timeBtn.addEventListener("click", () => {
       this.timestampService.insertCurrentTimestamp(this.markdownView);
     });
     const snapBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Take Screenshot (Ctrl+Shift+S)" }
+      cls: "mediascribe-ctrl-btn"
     });
-    (0, import_obsidian13.setIcon)(snapBtn, "camera");
+    setDynamicTooltip(snapBtn, this.app, "Take Screenshot", "mediascribe-capture-frame", "Ctrl+Shift+S");
+    (0, import_obsidian14.setIcon)(snapBtn, "camera");
     snapBtn.addEventListener("click", () => this.captureScreenshot());
     this.transcriptBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn mediascribe-cc-btn",
       attr: { title: "Subtitles / Transcript Panel" }
     });
-    (0, import_obsidian13.setIcon)(this.transcriptBtn, "subtitles");
+    (0, import_obsidian14.setIcon)(this.transcriptBtn, "subtitles");
     this.transcriptBtn.addEventListener("click", () => {
       this.toggleSideTab("transcript");
     });
@@ -3616,7 +3702,7 @@ var MediaScribeEmbeddedWidget = class {
       cls: "mediascribe-ctrl-btn",
       attr: { title: "A-B Repeat Loop" }
     });
-    (0, import_obsidian13.setIcon)(loopBtn, "repeat");
+    (0, import_obsidian14.setIcon)(loopBtn, "repeat");
     loopBtn.addEventListener("click", () => {
       this.isLooping = !this.isLooping;
       loopBtn.toggleClass("is-active", this.isLooping);
@@ -3765,7 +3851,7 @@ var MediaScribeEmbeddedWidget = class {
     const actionsBar = container.createDiv({ cls: "mediascribe-desc-actions" });
     if (this.currentAuthor) {
       const authorBadge = actionsBar.createDiv({ cls: "mediascribe-desc-author" });
-      (0, import_obsidian13.setIcon)(authorBadge.createSpan(), "user");
+      (0, import_obsidian14.setIcon)(authorBadge.createSpan(), "user");
       authorBadge.createSpan({ text: ` ${this.currentAuthor}` });
     }
     const spacer = actionsBar.createDiv({ cls: "mediascribe-desc-spacer" });
@@ -3774,19 +3860,19 @@ var MediaScribeEmbeddedWidget = class {
       cls: "mediascribe-desc-action-btn",
       attr: { title: "Copy Description" }
     });
-    (0, import_obsidian13.setIcon)(copyBtn, "copy");
+    (0, import_obsidian14.setIcon)(copyBtn, "copy");
     copyBtn.createSpan({ text: " Copy" });
     copyBtn.addEventListener("click", () => {
       if (this.currentDescription) {
         navigator.clipboard.writeText(this.currentDescription);
-        new import_obsidian13.Notice("MediaScribe: Description copied to clipboard.");
+        new import_obsidian14.Notice("MediaScribe: Description copied to clipboard.");
       }
     });
     const insertBtn = actionsBar.createEl("button", {
       cls: "mediascribe-desc-action-btn",
       attr: { title: "Insert Description into Active Note" }
     });
-    (0, import_obsidian13.setIcon)(insertBtn, "file-plus");
+    (0, import_obsidian14.setIcon)(insertBtn, "file-plus");
     insertBtn.createSpan({ text: " Insert to Note" });
     insertBtn.addEventListener("click", () => {
       this.insertDescriptionIntoNote();
@@ -3856,12 +3942,12 @@ var MediaScribeEmbeddedWidget = class {
   }
   insertDescriptionIntoNote() {
     if (!this.currentDescription) {
-      new import_obsidian13.Notice("MediaScribe: No description to insert.");
+      new import_obsidian14.Notice("MediaScribe: No description to insert.");
       return;
     }
     const editor = this.markdownView?.editor;
     if (!editor) {
-      new import_obsidian13.Notice("MediaScribe: No active note editor found.");
+      new import_obsidian14.Notice("MediaScribe: No active note editor found.");
       return;
     }
     const title = this.currentSource?.title || "Video";
@@ -3886,7 +3972,7 @@ var MediaScribeEmbeddedWidget = class {
     formattedText += convertedLines.join("\n") + "\n\n";
     const cursor = editor.getCursor();
     editor.replaceRange(formattedText, cursor);
-    new import_obsidian13.Notice("MediaScribe: Inserted description into note.");
+    new import_obsidian14.Notice("MediaScribe: Inserted description into note.");
   }
   buildPlaylistDrawer(parentEl) {
     this.playlistDrawerEl = parentEl.createDiv({ cls: "mediascribe-playlist-drawer" });
@@ -3920,7 +4006,7 @@ var MediaScribeEmbeddedWidget = class {
         this.settings.playlistAutoplay = !this.settings.playlistAutoplay;
         this.updateAutoplayUI();
         await this.onSettingsChange(this.settings);
-        new import_obsidian13.Notice(`MediaScribe: Playlist Autoplay ${this.settings.playlistAutoplay ? "ON" : "OFF"}`);
+        new import_obsidian14.Notice(`MediaScribe: Playlist Autoplay ${this.settings.playlistAutoplay ? "ON" : "OFF"}`);
       });
     }
     const listEl = this.playlistDrawerEl.createDiv({ cls: "mediascribe-playlist-list" });
@@ -3946,7 +4032,7 @@ var MediaScribeEmbeddedWidget = class {
         row.addEventListener("contextmenu", (e) => {
           e.preventDefault();
           e.stopPropagation();
-          const menu = new import_obsidian13.Menu();
+          const menu = new import_obsidian14.Menu();
           menu.addItem((menuItem) => {
             menuItem.setTitle("Create Note for Video").setIcon("file-plus").onClick(() => {
               this.createNoteForPlaylistItem(item);
@@ -3960,7 +4046,7 @@ var MediaScribeEmbeddedWidget = class {
           menu.addItem((menuItem) => {
             menuItem.setTitle("Copy Video URL").setIcon("copy").onClick(async () => {
               await navigator.clipboard.writeText(item.source.url);
-              new import_obsidian13.Notice("MediaScribe: Video URL copied to clipboard.");
+              new import_obsidian14.Notice("MediaScribe: Video URL copied to clipboard.");
             });
           });
           menu.showAtMouseEvent(e);
@@ -3992,7 +4078,7 @@ var MediaScribeEmbeddedWidget = class {
     try {
       let targetFolder = "";
       if (this.settings.playlistNoteFolderLocation === "specific_folder" && this.settings.playlistNoteSpecificFolder?.trim()) {
-        targetFolder = (0, import_obsidian13.normalizePath)(this.settings.playlistNoteSpecificFolder.trim());
+        targetFolder = (0, import_obsidian14.normalizePath)(this.settings.playlistNoteSpecificFolder.trim());
       } else {
         targetFolder = this.markdownView.file?.parent?.path || "";
       }
@@ -4006,10 +4092,10 @@ var MediaScribeEmbeddedWidget = class {
       }
       const cleanTitle = this.sanitizeFileName(item.title) || (item.source.videoId ? `Video ${item.source.videoId}` : "Playlist Video");
       let filePath = targetFolder ? `${targetFolder}/${cleanTitle}.md` : `${cleanTitle}.md`;
-      filePath = (0, import_obsidian13.normalizePath)(filePath);
+      filePath = (0, import_obsidian14.normalizePath)(filePath);
       let counter = 1;
       while (this.app.vault.getAbstractFileByPath(filePath)) {
-        filePath = targetFolder ? (0, import_obsidian13.normalizePath)(`${targetFolder}/${cleanTitle} (${counter}).md`) : (0, import_obsidian13.normalizePath)(`${cleanTitle} (${counter}).md`);
+        filePath = targetFolder ? (0, import_obsidian14.normalizePath)(`${targetFolder}/${cleanTitle} (${counter}).md`) : (0, import_obsidian14.normalizePath)(`${cleanTitle} (${counter}).md`);
         counter++;
       }
       const propertyKey = this.settings.playlistNoteProperty?.trim() || "video_link";
@@ -4018,12 +4104,12 @@ ${propertyKey}: "${item.source.url}"
 ---
 `;
       const newFile = await this.app.vault.create(filePath, fileContent);
-      new import_obsidian13.Notice(`MediaScribe: Created note "${newFile.basename}"`);
+      new import_obsidian14.Notice(`MediaScribe: Created note "${newFile.basename}"`);
       const leaf = this.app.workspace.getLeaf(false);
       await leaf.openFile(newFile);
     } catch (err) {
       console.error("[MediaScribe] Failed to create note for playlist item:", err);
-      new import_obsidian13.Notice(`MediaScribe: Failed to create note: ${err?.message || err}`);
+      new import_obsidian14.Notice(`MediaScribe: Failed to create note: ${err?.message || err}`);
     }
   }
   updateAutoplayUI() {
@@ -4145,7 +4231,7 @@ ${propertyKey}: "${item.source.url}"
       if (this.player) {
         this.loopA = await this.player.getCurrentTime();
         spanA.setText(formatSeconds(this.loopA));
-        new import_obsidian13.Notice(`MediaScribe: Point A set to ${formatSeconds(this.loopA)}`);
+        new import_obsidian14.Notice(`MediaScribe: Point A set to ${formatSeconds(this.loopA)}`);
       }
     });
     const btnB = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Set B" });
@@ -4154,7 +4240,7 @@ ${propertyKey}: "${item.source.url}"
       if (this.player) {
         this.loopB = await this.player.getCurrentTime();
         spanB.setText(formatSeconds(this.loopB));
-        new import_obsidian13.Notice(`MediaScribe: Point B set to ${formatSeconds(this.loopB)}`);
+        new import_obsidian14.Notice(`MediaScribe: Point B set to ${formatSeconds(this.loopB)}`);
       }
     });
     const clearBtn = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Clear" });
@@ -4163,12 +4249,12 @@ ${propertyKey}: "${item.source.url}"
       this.loopB = null;
       spanA.setText("--:--");
       spanB.setText("--:--");
-      new import_obsidian13.Notice("MediaScribe: A-B loop cleared.");
+      new import_obsidian14.Notice("MediaScribe: A-B loop cleared.");
     });
   }
   async captureScreenshot() {
     if (!this.player || !this.currentSource) {
-      new import_obsidian13.Notice("MediaScribe: No media player active to capture.");
+      new import_obsidian14.Notice("MediaScribe: No media player active to capture.");
       return;
     }
     await this.screenshotService.captureAndInsert(
@@ -4275,10 +4361,10 @@ ${propertyKey}: "${item.source.url}"
     if (this.playBtn) {
       this.playBtn.empty();
       if (isEnded) {
-        (0, import_obsidian13.setIcon)(this.playBtn, "rotate-ccw");
+        (0, import_obsidian14.setIcon)(this.playBtn, "rotate-ccw");
         this.playBtn.setAttribute("title", "Replay (Ctrl+K)");
       } else {
-        (0, import_obsidian13.setIcon)(this.playBtn, isPlaying ? "pause" : "play");
+        (0, import_obsidian14.setIcon)(this.playBtn, isPlaying ? "pause" : "play");
         this.playBtn.setAttribute("title", isPlaying ? "Pause (Ctrl+K)" : "Play (Ctrl+K)");
       }
     }
@@ -4582,7 +4668,7 @@ var EmbeddedPlayerManager = class {
    * Returns player from currently active markdown view widget if one exists
    */
   getActiveEmbeddedPlayer() {
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
     if (activeView && this.activeWidgets.has(activeView)) {
       return this.activeWidgets.get(activeView).getActivePlayer();
     }
@@ -4597,7 +4683,7 @@ var EmbeddedPlayerManager = class {
     return null;
   }
   getActiveEmbeddedWidget() {
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
     if (activeView && this.activeWidgets.has(activeView)) {
       return this.activeWidgets.get(activeView);
     }
@@ -4693,7 +4779,7 @@ var EmbeddedPlayerManager = class {
   async mountWithPosition(view, position, seekToSeconds, shouldPlay = false, sourceToLoad) {
     const file = view.file;
     let effectivePos = position;
-    if (!import_obsidian14.Platform.isDesktop) {
+    if (!import_obsidian15.Platform.isDesktop) {
       const isLandscape = window.innerWidth > window.innerHeight;
       if (isLandscape) {
         effectivePos = position === "vertical_left" ? "vertical_left" : "vertical_right";
@@ -4711,7 +4797,7 @@ var EmbeddedPlayerManager = class {
       this.settings.verifyMediaContentType ?? true
     ) : null);
     if (!source) {
-      new import_obsidian14.Notice("MediaScribe: No media found to dock into note.");
+      new import_obsidian15.Notice("MediaScribe: No media found to dock into note.");
       return;
     }
     this.dismountView(view);
@@ -4750,19 +4836,19 @@ var EmbeddedPlayerManager = class {
     }
   }
   async toggleActiveView() {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
     if (!view || !view.file) return;
     if (this.activeWidgets.has(view)) {
       this.closedNotes.add(view.file.path);
       this.dismountView(view);
-      new import_obsidian14.Notice("MediaScribe: Player closed.");
+      new import_obsidian15.Notice("MediaScribe: Player closed.");
     } else {
       this.closedNotes.delete(view.file.path);
       await this.syncView(view, true);
       if (this.activeWidgets.has(view)) {
-        new import_obsidian14.Notice("MediaScribe: Player opened.");
+        new import_obsidian15.Notice("MediaScribe: Player opened.");
       } else {
-        new import_obsidian14.Notice("MediaScribe: No supported video/audio found in active note.");
+        new import_obsidian15.Notice("MediaScribe: No supported video/audio found in active note.");
       }
     }
   }
@@ -4771,7 +4857,7 @@ var EmbeddedPlayerManager = class {
   }
   syncActiveView() {
     this.cleanupDisconnectedViews();
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
     if (view) {
       this.syncView(view);
     }
@@ -4813,7 +4899,7 @@ var EmbeddedPlayerManager = class {
 };
 
 // src/main.ts
-var MediaScribePlugin = class extends import_obsidian15.Plugin {
+var MediaScribePlugin = class extends import_obsidian16.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -4845,14 +4931,21 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
         await this.saveSettings();
       }
     );
-    this.addRibbonIcon("play-circle", "MediaScribe: Toggle / Open Player", async () => {
-      const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+    const ribbonIcon = this.addRibbonIcon("play-circle", "MediaScribe: Toggle / Open Player", async () => {
+      const activeView = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
       if (activeView) {
         await this.embeddedManager.toggleActiveView();
       } else {
-        new import_obsidian15.Notice("MediaScribe: Please open or focus a note to dock the player.");
+        new import_obsidian16.Notice("MediaScribe: Please open or focus a note to dock the player.");
       }
     });
+    setDynamicTooltip(
+      ribbonIcon,
+      this.app,
+      "MediaScribe: Toggle / Open Player",
+      "mediascribe-toggle-embedded-player",
+      "Ctrl+Shift+M"
+    );
     this.registerPluginCommands();
     this.registerTimestampClickHandler();
     this.setupMarkdownPostProcessor();
@@ -4863,7 +4956,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
     );
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
         if (view) {
           this.embeddedManager.syncView(view);
         }
@@ -4874,7 +4967,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
       this.app.metadataCache.on("changed", (file) => {
         if (metaDebounce !== null) window.clearTimeout(metaDebounce);
         metaDebounce = window.setTimeout(() => {
-          const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+          const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
           if (view && view.file?.path === file.path) {
             this.embeddedManager.syncView(view);
           }
@@ -4949,7 +5042,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
       name: "Toggle / Reopen media player for active note",
       hotkeys: [{ modifiers: ["Mod", "Shift"], key: "m" }],
       checkCallback: (checking) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
         if (view && view.file) {
           if (this.embeddedManager.hasActiveWidget(view)) {
             if (!checking) {
@@ -4987,12 +5080,12 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
                 this.settings.verifyMediaContentType ?? true
               );
               if (source) {
-                const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+                const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
                 if (view) {
                   this.embeddedManager.reopenView(view);
                 }
               } else {
-                new import_obsidian15.Notice("MediaScribe: No supported video/audio found in note.");
+                new import_obsidian16.Notice("MediaScribe: No supported video/audio found in note.");
               }
             })();
           }
@@ -5013,14 +5106,14 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
             this.settings.verifyMediaContentType ?? true
           );
           if (source) {
-            const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+            const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
             if (view) {
               this.embeddedManager.mountWithPosition(view, this.settings.embeddedPosition || "top", 0, true, source);
             } else {
-              new import_obsidian15.Notice("MediaScribe: Please open or focus a note in the editor to mount media.");
+              new import_obsidian16.Notice("MediaScribe: Please open or focus a note in the editor to mount media.");
             }
           } else {
-            new import_obsidian15.Notice("MediaScribe: Invalid or unsupported media source. The link is not a playable video or audio source.");
+            new import_obsidian16.Notice("MediaScribe: Invalid or unsupported media source. The link is not a playable video or audio source.");
           }
         }
       }
@@ -5061,7 +5154,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
         if (player?.nextVideo) {
           player.nextVideo();
         } else {
-          new import_obsidian15.Notice("MediaScribe: Next video control not available.");
+          new import_obsidian16.Notice("MediaScribe: Next video control not available.");
         }
       }
     });
@@ -5074,7 +5167,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
         if (player?.previousVideo) {
           player.previousVideo();
         } else {
-          new import_obsidian15.Notice("MediaScribe: Previous video control not available.");
+          new import_obsidian16.Notice("MediaScribe: Previous video control not available.");
         }
       }
     });
@@ -5083,7 +5176,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
       name: "Insert current timestamp into note",
       hotkeys: [{ modifiers: ["Mod"], key: "i" }],
       editorCallback: () => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
         this.timestampService.insertCurrentTimestamp(view);
       }
     });
@@ -5096,7 +5189,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
         if (embedded) {
           embedded.captureScreenshot();
         } else {
-          new import_obsidian15.Notice("MediaScribe: No active media player found to capture screenshot.");
+          new import_obsidian16.Notice("MediaScribe: No active media player found to capture screenshot.");
         }
       }
     });
@@ -5184,10 +5277,10 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
     if (player) {
       player.seekTo(seconds);
       player.play();
-      new import_obsidian15.Notice(`MediaScribe: Jumped to ${formatSeconds(seconds)}`);
+      new import_obsidian16.Notice(`MediaScribe: Jumped to ${formatSeconds(seconds)}`);
       return true;
     }
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
     if (activeView && activeView.file) {
       void this.detector.extractMediaFromNote(
         activeView.file,
@@ -5197,7 +5290,7 @@ var MediaScribePlugin = class extends import_obsidian15.Plugin {
       ).then((source) => {
         if (source) {
           this.embeddedManager.reopenView(activeView, seconds);
-          new import_obsidian15.Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
+          new import_obsidian16.Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
         }
       });
       return true;

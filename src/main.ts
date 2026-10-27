@@ -8,6 +8,7 @@ import { TypingScribeService } from "./services/typingScribeService";
 import { TranscriptService } from "./services/transcriptService";
 import { EmbeddedPlayerManager } from "./services/embeddedPlayerManager";
 import { extractTimestampsFromText, formatSeconds, parseTimestamp } from "./utils/time";
+import { setDynamicTooltip } from "./utils/hotkey";
 
 export default class MediaScribePlugin extends Plugin {
   public settings: MediaScribeSettings = DEFAULT_SETTINGS;
@@ -51,7 +52,7 @@ export default class MediaScribePlugin extends Plugin {
     );
 
     // Register Ribbon Icon
-    this.addRibbonIcon("play-circle", "MediaScribe: Toggle / Open Player", async () => {
+    const ribbonIcon = this.addRibbonIcon("play-circle", "MediaScribe: Toggle / Open Player", async () => {
       const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (activeView) {
         await this.embeddedManager.toggleActiveView();
@@ -59,6 +60,13 @@ export default class MediaScribePlugin extends Plugin {
         new Notice("MediaScribe: Please open or focus a note to dock the player.");
       }
     });
+    setDynamicTooltip(
+      ribbonIcon,
+      this.app,
+      "MediaScribe: Toggle / Open Player",
+      "mediascribe-toggle-embedded-player",
+      "Ctrl+Shift+M"
+    );
 
     // Register Commands
     this.registerPluginCommands();

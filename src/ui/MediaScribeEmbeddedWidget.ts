@@ -11,6 +11,7 @@ import { TranscriptPanel } from "./TranscriptPanel";
 import { TimelineMarkers } from "./TimelineMarkers";
 import { formatSeconds, parseTimestamp } from "../utils/time";
 import { fetchYouTubeTitle, fetchYouTubeVideoMetadata, fetchYouTubePlaylistItems, getCachedYouTubeTitle } from "../utils/youtube";
+import { setLucideXIcon, setDynamicTooltip } from "../utils/hotkey";
 
 export class MediaScribeEmbeddedWidget {
   private plugin: any;
@@ -583,7 +584,7 @@ export class MediaScribeEmbeddedWidget {
       cls: "mediascribe-btn-icon",
       attr: { title: "Close Media Player" }
     });
-    setIcon(closeBtn, "x");
+    setLucideXIcon(closeBtn);
     closeBtn.addEventListener("click", () => {
       this.destroy();
       new Notice("MediaScribe: Player closed. Click ribbon icon, timestamp, or run 'Toggle media player' to reopen.");
@@ -696,9 +697,9 @@ export class MediaScribeEmbeddedWidget {
 
     // Play / Pause (YouTube Style)
     this.playBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-play-btn",
-      attr: { title: "Play / Pause (Ctrl+K)" }
+      cls: "mediascribe-ctrl-btn mediascribe-play-btn"
     });
+    setDynamicTooltip(this.playBtn, this.app, "Play / Pause", "mediascribe-toggle-play", "Ctrl+K");
     setIcon(this.playBtn, "play");
     this.playBtn.addEventListener("click", async () => {
       if (!this.player) return;
@@ -715,33 +716,33 @@ export class MediaScribeEmbeddedWidget {
 
     // Previous Video in Playlist
     this.prevVideoBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn is-hidden",
-      attr: { title: "Previous Video (Ctrl+Alt+P)" }
+      cls: "mediascribe-ctrl-btn is-hidden"
     });
+    setDynamicTooltip(this.prevVideoBtn, this.app, "Previous Video", "mediascribe-previous-video", "Ctrl+Alt+P");
     setIcon(this.prevVideoBtn, "skip-back");
     this.prevVideoBtn.addEventListener("click", () => this.handlePreviousVideo());
 
     // Next Video in Playlist
     this.nextVideoBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn is-hidden",
-      attr: { title: "Next Video (Ctrl+Alt+N)" }
+      cls: "mediascribe-ctrl-btn is-hidden"
     });
+    setDynamicTooltip(this.nextVideoBtn, this.app, "Next Video", "mediascribe-next-video", "Ctrl+Alt+N");
     setIcon(this.nextVideoBtn, "skip-forward");
     this.nextVideoBtn.addEventListener("click", () => this.handleNextVideo());
 
     // Rewind 5s
     const rewBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: `Rewind ${this.settings.jumpStepSeconds}s (Ctrl+J)` }
+      cls: "mediascribe-ctrl-btn"
     });
+    setDynamicTooltip(rewBtn, this.app, () => `Rewind ${this.settings.jumpStepSeconds}s`, "mediascribe-jump-backward", "Ctrl+J");
     setIcon(rewBtn, "rotate-ccw");
     rewBtn.addEventListener("click", () => this.player?.jump(-this.settings.jumpStepSeconds));
 
     // Forward 5s
     const fwdBtn = leftControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: `Forward ${this.settings.jumpStepSeconds}s (Ctrl+L)` }
+      cls: "mediascribe-ctrl-btn"
     });
+    setDynamicTooltip(fwdBtn, this.app, () => `Forward ${this.settings.jumpStepSeconds}s`, "mediascribe-jump-forward", "Ctrl+L");
     setIcon(fwdBtn, "rotate-cw");
     fwdBtn.addEventListener("click", () => this.player?.jump(this.settings.jumpStepSeconds));
 
@@ -833,9 +834,9 @@ export class MediaScribeEmbeddedWidget {
 
     // Auto-Pause Typing Scribe Toggle
     const scribeBtn = rightControls.createEl("button", {
-      cls: `mediascribe-ctrl-btn ${this.typingScribeService.active ? "is-active" : ""}`,
-      attr: { title: "Toggle Auto-Pause While Typing" }
+      cls: `mediascribe-ctrl-btn ${this.typingScribeService.active ? "is-active" : ""}`
     });
+    setDynamicTooltip(scribeBtn, this.app, "Toggle Auto-Pause While Typing", "mediascribe-toggle-typing-scribe");
     setIcon(scribeBtn, "pen-tool");
     scribeBtn.addEventListener("click", () => {
       const active = this.typingScribeService.toggle();
@@ -844,9 +845,9 @@ export class MediaScribeEmbeddedWidget {
 
     // Insert Timestamp
     const timeBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Insert Timestamp (Ctrl+I)" }
+      cls: "mediascribe-ctrl-btn"
     });
+    setDynamicTooltip(timeBtn, this.app, "Insert Timestamp", "mediascribe-insert-timestamp", "Ctrl+I");
     setIcon(timeBtn, "clock");
     timeBtn.addEventListener("click", () => {
       this.timestampService.insertCurrentTimestamp(this.markdownView);
@@ -854,9 +855,9 @@ export class MediaScribeEmbeddedWidget {
 
     // Simple Screenshot Button
     const snapBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
-      attr: { title: "Take Screenshot (Ctrl+Shift+S)" }
+      cls: "mediascribe-ctrl-btn"
     });
+    setDynamicTooltip(snapBtn, this.app, "Take Screenshot", "mediascribe-capture-frame", "Ctrl+Shift+S");
     setIcon(snapBtn, "camera");
     snapBtn.addEventListener("click", () => this.captureScreenshot());
 
