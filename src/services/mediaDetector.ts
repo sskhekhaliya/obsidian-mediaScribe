@@ -442,7 +442,11 @@ export class MediaDetector {
     additionalProperty?: string,
     verifyContentType: boolean = true
   ): Promise<MediaSourceInfo | null> {
-    const cache = this.app.metadataCache.getFileCache(file);
+    let cache = this.app.metadataCache.getFileCache(file);
+    if (!cache) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      cache = this.app.metadataCache.getFileCache(file);
+    }
     if (!cache || !cache.frontmatter) return null;
 
     const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty)

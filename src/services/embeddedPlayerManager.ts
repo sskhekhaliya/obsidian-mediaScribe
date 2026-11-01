@@ -114,6 +114,7 @@ export class EmbeddedPlayerManager {
     }
 
     if (this.closedNotes.has(file.path) && !forceOpen) {
+      this.dismountView(view);
       return;
     }
 
@@ -123,6 +124,11 @@ export class EmbeddedPlayerManager {
       this.settings.playlistNoteProperty,
       this.settings.verifyMediaContentType ?? true
     );
+
+    // If the active file changed while extraction was running, abort so we don't mount on the wrong file!
+    if (view.file?.path !== file.path) {
+      return;
+    }
 
     if (source) {
       let widget = this.activeWidgets.get(view);
@@ -162,6 +168,17 @@ export class EmbeddedPlayerManager {
     if (widget) {
       this.activeWidgets.delete(view);
       widget.destroy();
+    }
+
+    // Safety net: ensure any lingering host element in contentEl is removed
+    if (view && view.contentEl) {
+      const lingering = view.contentEl.querySelectorAll(".mediascribe-embedded-host");
+      lingering.forEach((el) => el.remove());
+      view.contentEl.removeClass(
+        "mediascribe-dock-vertical",
+        "mediascribe-dock-left",
+        "mediascribe-dock-right"
+      );
     }
   }
 
@@ -283,6 +300,15 @@ export class EmbeddedPlayerManager {
     if (view) {
       this.syncView(view);
     }
+  }
+
+  public syncAllLeaves(): void {
+    this.cleanupDisconnectedViews();
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view instanceof MarkdownView) {
+        void this.syncView(leaf.view);
+      }
+    });
   }
 
   /**

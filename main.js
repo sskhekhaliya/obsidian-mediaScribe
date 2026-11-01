@@ -898,7 +898,11 @@ var MediaDetector = class {
    * Asynchronously verifies remote Content-Type for web URLs if verifyContentType is enabled.
    */
   async extractMediaFromNote(file, mediaPropertyNames, additionalProperty, verifyContentType = true) {
-    const cache = this.app.metadataCache.getFileCache(file);
+    let cache = this.app.metadataCache.getFileCache(file);
+    if (!cache) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      cache = this.app.metadataCache.getFileCache(file);
+    }
     if (!cache || !cache.frontmatter) return null;
     const propList = additionalProperty && !mediaPropertyNames.includes(additionalProperty) ? [additionalProperty, ...mediaPropertyNames] : mediaPropertyNames;
     for (const prop of propList) {
@@ -3704,6 +3708,7 @@ var MediaScribeEmbeddedWidget = class {
     });
     (0, import_obsidian14.setIcon)(closeBtn, "x");
     closeBtn.addEventListener("click", () => {
+      this.onClose?.();
       this.destroy();
       new import_obsidian14.Notice("MediaScribe: Player closed. Click ribbon icon, timestamp, or run 'Toggle media player' to reopen.");
     });
@@ -5036,7 +5041,6 @@ ${propertyKey}: "${item.source.url}"
       "mediascribe-dock-right"
     );
     this.hostEl.remove();
-    this.onClose?.();
   }
 };
 
@@ -5119,6 +5123,7 @@ var EmbeddedPlayerManager = class {
       return;
     }
     if (this.closedNotes.has(file.path) && !forceOpen) {
+      this.dismountView(view);
       return;
     }
     const source = await this.detector.extractMediaFromNote(
@@ -5127,6 +5132,9 @@ var EmbeddedPlayerManager = class {
       this.settings.playlistNoteProperty,
       this.settings.verifyMediaContentType ?? true
     );
+    if (view.file?.path !== file.path) {
+      return;
+    }
     if (source) {
       let widget = this.activeWidgets.get(view);
       if (!widget) {
@@ -5164,6 +5172,15 @@ var EmbeddedPlayerManager = class {
     if (widget) {
       this.activeWidgets.delete(view);
       widget.destroy();
+    }
+    if (view && view.contentEl) {
+      const lingering = view.contentEl.querySelectorAll(".mediascribe-embedded-host");
+      lingering.forEach((el) => el.remove());
+      view.contentEl.removeClass(
+        "mediascribe-dock-vertical",
+        "mediascribe-dock-left",
+        "mediascribe-dock-right"
+      );
     }
   }
   async reopenView(view, seekToSeconds) {
@@ -5267,6 +5284,14 @@ var EmbeddedPlayerManager = class {
     if (view) {
       this.syncView(view);
     }
+  }
+  syncAllLeaves() {
+    this.cleanupDisconnectedViews();
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view instanceof import_obsidian15.MarkdownView) {
+        void this.syncView(leaf.view);
+      }
+    });
   }
   /**
    * Pauses all other active players when one player begins playback.
@@ -5413,10 +5438,14 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       })
     );
     this.registerEvent(
-      this.app.workspace.on("file-open", (file) => {
-        const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
-        if (view) {
-          this.embeddedManager.syncView(view);
+      this.app.workspace.on("file-open", () => {
+        this.embeddedManager.syncAllLeaves();
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (leaf && leaf.view instanceof import_obsidian16.MarkdownView) {
+          void this.embeddedManager.syncView(leaf.view);
         }
       })
     );
@@ -5434,11 +5463,11 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
     );
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
-        this.embeddedManager.syncActiveView();
+        this.embeddedManager.syncAllLeaves();
       })
     );
     this.app.workspace.onLayoutReady(() => {
-      this.embeddedManager.syncActiveView();
+      this.embeddedManager.syncAllLeaves();
     });
     this.addSettingTab(new MediaScribeSettingTab(this.app, this));
   }

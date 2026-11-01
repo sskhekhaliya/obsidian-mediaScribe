@@ -156,12 +156,18 @@ export default class MediaScribePlugin extends Plugin {
       })
     );
 
-    // Auto-embed or update on file-open
+    // Auto-embed or update on file-open across all leaves
     this.registerEvent(
-      this.app.workspace.on("file-open", (file) => {
-        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (view) {
-          this.embeddedManager.syncView(view);
+      this.app.workspace.on("file-open", () => {
+        this.embeddedManager.syncAllLeaves();
+      })
+    );
+
+    // Sync when switching active tabs or splits
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (leaf && leaf.view instanceof MarkdownView) {
+          void this.embeddedManager.syncView(leaf.view);
         }
       })
     );
@@ -183,13 +189,13 @@ export default class MediaScribePlugin extends Plugin {
     // Layout sync
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
-        this.embeddedManager.syncActiveView();
+        this.embeddedManager.syncAllLeaves();
       })
     );
 
     // Initial sync
     this.app.workspace.onLayoutReady(() => {
-      this.embeddedManager.syncActiveView();
+      this.embeddedManager.syncAllLeaves();
     });
 
     // Add Settings Tab

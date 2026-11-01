@@ -766,6 +766,7 @@ export class MediaScribeEmbeddedWidget {
     });
     setIcon(closeBtn, "x");
     closeBtn.addEventListener("click", () => {
+      this.onClose?.();
       this.destroy();
       new Notice("MediaScribe: Player closed. Click ribbon icon, timestamp, or run 'Toggle media player' to reopen.");
     });
@@ -2382,6 +2383,5 @@ export class MediaScribeEmbeddedWidget {
       "mediascribe-dock-right"
     );
     this.hostEl.remove();
-    this.onClose?.();
   }
 }
