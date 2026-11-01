@@ -83,6 +83,7 @@ export interface MediaScribeSettings {
   autoClearHistoryDays: number;
   mediaPropertyNames: string[]; // e.g. ["media_link", "media", "video", "url"]
   enableAmbientMode: boolean;
+  enableCaptions?: boolean;
   playlistNoteProperty: string;
   playlistNoteFolderLocation: "current_folder" | "specific_folder";
   playlistNoteSpecificFolder: string;
@@ -127,6 +128,7 @@ export const DEFAULT_SETTINGS: MediaScribeSettings = {
   autoClearHistoryDays: 30,
   mediaPropertyNames: ["media_link", "video_link", "media", "video", "url", "youtube"],
   enableAmbientMode: true,
+  enableCaptions: false,
   playlistNoteProperty: "video_link",
   playlistNoteFolderLocation: "current_folder",
   playlistNoteSpecificFolder: "",

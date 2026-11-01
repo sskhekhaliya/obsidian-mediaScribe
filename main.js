@@ -57,6 +57,7 @@ var DEFAULT_SETTINGS = {
   autoClearHistoryDays: 30,
   mediaPropertyNames: ["media_link", "video_link", "media", "video", "url", "youtube"],
   enableAmbientMode: true,
+  enableCaptions: false,
   playlistNoteProperty: "video_link",
   playlistNoteFolderLocation: "current_folder",
   playlistNoteSpecificFolder: "",
@@ -2342,12 +2343,22 @@ var HTML5Player = class extends BasePlayer {
         this.togglePlay();
       });
       wrapper.addEventListener("dblclick", () => {
+        const host = wrapper.closest(".mediascribe-embedded-host");
+        const target = host || wrapper;
         if (!document.fullscreenElement) {
-          wrapper.requestFullscreen?.().catch(() => {
-          });
+          if (target.requestFullscreen) {
+            target.requestFullscreen().catch(() => {
+            });
+          } else if (target.webkitRequestFullscreen) {
+            target.webkitRequestFullscreen();
+          }
         } else {
-          document.exitFullscreen?.().catch(() => {
-          });
+          if (document.exitFullscreen) {
+            document.exitFullscreen().catch(() => {
+            });
+          } else if (document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
+          }
         }
       });
     }
@@ -3075,9 +3086,20 @@ var MediaScribeEmbeddedWidget = class {
     this.transcriptViewEl = null;
     this.descriptionViewEl = null;
     this.transcriptBtn = null;
+    this.transcriptSideBtn = null;
     this.descriptionBtn = null;
+    this.areCaptionsEnabled = false;
+    this.currentTranscriptItems = [];
+    this.captionsOverlayEl = null;
+    this.captionsTextEl = null;
+    this.currentCaptionText = "";
     this.posBtn = null;
     this.lastAppliedPosition = "top";
+    this.onFullscreenChangeHandler = null;
+    this.fullscreenIdleTimeout = null;
+    this.isHoveringControls = false;
+    this.onMouseMoveFullscreenHandler = null;
+    this.fullscreenShieldEl = null;
     this.onResizeHandler = () => {
       if (!import_obsidian14.Platform.isDesktop) {
         const currentEffective = this.getEffectivePosition();
@@ -3097,6 +3119,7 @@ var MediaScribeEmbeddedWidget = class {
     this.onSettingsChange = onSettingsChange;
     this.onClose = onClose;
     this.onPlay = onPlay;
+    this.areCaptionsEnabled = this.settings.enableCaptions ?? false;
     this.hostEl = document.createElement("div");
     this.hostEl.className = "mediascribe-embedded-host";
     const contentEl = this.markdownView.contentEl;
@@ -3204,6 +3227,44 @@ var MediaScribeEmbeddedWidget = class {
     await this.onSettingsChange(this.settings);
     this.applyPositionStyles();
     this.timelineMarkers?.refresh();
+  }
+  isFullscreenActive() {
+    return Boolean(
+      document.fullscreenElement === this.hostEl || document.webkitFullscreenElement === this.hostEl || document.fullscreenElement?.contains(this.hostEl)
+    );
+  }
+  async toggleFullscreen() {
+    try {
+      if (!this.isFullscreenActive()) {
+        if (this.hostEl.requestFullscreen) {
+          await this.hostEl.requestFullscreen();
+        } else if (this.hostEl.webkitRequestFullscreen) {
+          await this.hostEl.webkitRequestFullscreen();
+        }
+      } else {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+          await document.webkitExitFullscreen();
+        }
+      }
+    } catch (err) {
+      console.warn("[MediaScribe] Fullscreen error:", err);
+    }
+  }
+  resetFullscreenIdleTimer() {
+    if (!this.isFullscreenActive()) return;
+    this.hostEl.removeClass("mediascribe-fullscreen-idle");
+    if (this.fullscreenIdleTimeout !== null) {
+      window.clearTimeout(this.fullscreenIdleTimeout);
+      this.fullscreenIdleTimeout = null;
+    }
+    if (this.isHoveringControls) return;
+    this.fullscreenIdleTimeout = window.setTimeout(() => {
+      if (this.isFullscreenActive() && !this.isHoveringControls) {
+        this.hostEl.addClass("mediascribe-fullscreen-idle");
+      }
+    }, 2500);
   }
   getActivePlayer() {
     return this.player;
@@ -3396,10 +3457,100 @@ var MediaScribeEmbeddedWidget = class {
     this.playerAreaEl = playerArea;
     this.playerContainerEl = playerArea.createDiv({ cls: "mediascribe-player-container" });
     this.buildSidePanel(playerArea);
+    this.buildCaptionsOverlay(playerArea);
+    this.playerAreaEl.addEventListener("dblclick", (e) => {
+      if (e.target?.closest(".mediascribe-side-panel, button, input, a")) return;
+      this.toggleFullscreen();
+    });
     this.buildControls(this.hostEl);
     this.buildLoopBar(this.hostEl);
     this.buildResizeHandle(this.hostEl);
+    this.buildFullscreenShield(this.hostEl);
     this.updateSidePanelPosition();
+  }
+  buildFullscreenShield(parentEl) {
+    const shield = parentEl.createDiv({ cls: "mediascribe-fullscreen-shield" });
+    this.fullscreenShieldEl = shield;
+    let clickTimeout = null;
+    shield.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (clickTimeout !== null) {
+        window.clearTimeout(clickTimeout);
+        clickTimeout = null;
+        return;
+      }
+      clickTimeout = window.setTimeout(() => {
+        clickTimeout = null;
+        this.player?.togglePlay();
+        this.resetFullscreenIdleTimer();
+      }, 220);
+    });
+    shield.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      if (clickTimeout !== null) {
+        window.clearTimeout(clickTimeout);
+        clickTimeout = null;
+      }
+      this.toggleFullscreen();
+    });
+    shield.addEventListener("mousemove", () => {
+      this.resetFullscreenIdleTimer();
+    });
+  }
+  buildCaptionsOverlay(parentEl) {
+    const overlay = parentEl.createDiv({ cls: "mediascribe-captions-overlay" });
+    this.captionsOverlayEl = overlay;
+    this.captionsTextEl = overlay.createDiv({ cls: "mediascribe-captions-text" });
+    this.captionsTextEl.setText("");
+    if (this.areCaptionsEnabled && this.currentCaptionText) {
+      this.captionsTextEl.setText(this.currentCaptionText);
+      overlay.addClass("is-visible");
+    }
+  }
+  updateCaptions(time) {
+    if (!this.areCaptionsEnabled || !this.captionsOverlayEl || !this.captionsTextEl) {
+      this.captionsOverlayEl?.removeClass("is-visible");
+      return;
+    }
+    if (!this.currentTranscriptItems || this.currentTranscriptItems.length === 0) {
+      this.captionsOverlayEl.removeClass("is-visible");
+      return;
+    }
+    const item = this.currentTranscriptItems.find((it) => {
+      const end = it.end > it.start ? it.end : it.start + 3.5;
+      return time >= it.start && time <= end;
+    });
+    if (item && item.text) {
+      const clean = item.text.replace(/<[^>]*>/g, "").trim();
+      if (clean) {
+        if (this.currentCaptionText !== clean) {
+          this.currentCaptionText = clean;
+          this.captionsTextEl.setText(clean);
+        }
+        this.captionsOverlayEl.addClass("is-visible");
+        return;
+      }
+    }
+    if (this.currentCaptionText !== "") {
+      this.currentCaptionText = "";
+      this.captionsTextEl.setText("");
+    }
+    this.captionsOverlayEl.removeClass("is-visible");
+  }
+  async toggleCaptions() {
+    this.areCaptionsEnabled = !this.areCaptionsEnabled;
+    this.transcriptBtn?.toggleClass("is-active", this.areCaptionsEnabled);
+    this.settings.enableCaptions = this.areCaptionsEnabled;
+    await this.onSettingsChange(this.settings);
+    if (this.areCaptionsEnabled) {
+      new import_obsidian14.Notice("MediaScribe: Subtitles ON");
+      this.updateCaptions(this.currentTime);
+    } else {
+      new import_obsidian14.Notice("MediaScribe: Subtitles OFF");
+      this.captionsOverlayEl?.removeClass("is-visible");
+      this.currentCaptionText = "";
+      if (this.captionsTextEl) this.captionsTextEl.setText("");
+    }
   }
   buildHeader(parentEl) {
     const header = parentEl.createDiv({ cls: "mediascribe-view-header mediascribe-embedded-header" });
@@ -3429,6 +3580,14 @@ var MediaScribeEmbeddedWidget = class {
     (0, import_obsidian14.setIcon)(this.descriptionBtn, "info");
     this.descriptionBtn.addEventListener("click", () => {
       this.toggleSideTab("description");
+    });
+    this.transcriptSideBtn = actions.createEl("button", {
+      cls: "mediascribe-btn-icon",
+      attr: { title: "Toggle Full Transcript Panel" }
+    });
+    (0, import_obsidian14.setIcon)(this.transcriptSideBtn, "scroll-text");
+    this.transcriptSideBtn.addEventListener("click", () => {
+      this.toggleSideTab("transcript");
     });
     const refreshPinsBtn = actions.createEl("button", {
       cls: "mediascribe-btn-icon",
@@ -3541,6 +3700,7 @@ var MediaScribeEmbeddedWidget = class {
         const percent = this.duration > 0 ? this.currentTime / this.duration * 100 : 0;
         this.progressSlider.style.setProperty("--progress-percent", `${percent.toFixed(2)}%`);
         this.updateTimeDisplay();
+        this.updateCaptions(this.currentTime);
       }
     });
     this.timelineMarkers = new TimelineMarkers(scrubberContainer, this.app, () => this.player);
@@ -3687,12 +3847,12 @@ var MediaScribeEmbeddedWidget = class {
     (0, import_obsidian14.setIcon)(snapBtn, "camera");
     snapBtn.addEventListener("click", () => this.captureScreenshot());
     this.transcriptBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-cc-btn",
-      attr: { title: "Subtitles / Transcript Panel" }
+      cls: `mediascribe-ctrl-btn mediascribe-cc-btn ${this.areCaptionsEnabled ? "is-active" : ""}`,
+      attr: { title: "Toggle Video Subtitles (CC)" }
     });
     (0, import_obsidian14.setIcon)(this.transcriptBtn, "subtitles");
     this.transcriptBtn.addEventListener("click", () => {
-      this.toggleSideTab("transcript");
+      this.toggleCaptions();
     });
     const loopBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn",
@@ -3704,6 +3864,55 @@ var MediaScribeEmbeddedWidget = class {
       loopBtn.toggleClass("is-active", this.isLooping);
       this.loopBarEl?.toggleClass("is-hidden", !this.isLooping);
     });
+    const fullscreenBtn = rightControls.createEl("button", {
+      cls: "mediascribe-ctrl-btn",
+      attr: { title: "Toggle Fullscreen" }
+    });
+    (0, import_obsidian14.setIcon)(fullscreenBtn, "maximize");
+    this.onFullscreenChangeHandler = () => {
+      const isFs = this.isFullscreenActive();
+      fullscreenBtn.empty();
+      (0, import_obsidian14.setIcon)(fullscreenBtn, isFs ? "minimize" : "maximize");
+      fullscreenBtn.setAttribute("title", isFs ? "Exit Fullscreen" : "Toggle Fullscreen");
+      this.hostEl.toggleClass("is-fullscreen", isFs);
+      if (isFs) {
+        this.resetFullscreenIdleTimer();
+      } else {
+        if (this.fullscreenIdleTimeout !== null) {
+          window.clearTimeout(this.fullscreenIdleTimeout);
+          this.fullscreenIdleTimeout = null;
+        }
+        this.hostEl.removeClass("mediascribe-fullscreen-idle");
+      }
+    };
+    fullscreenBtn.addEventListener("click", () => {
+      this.toggleFullscreen();
+    });
+    document.addEventListener("fullscreenchange", this.onFullscreenChangeHandler);
+    document.addEventListener("webkitfullscreenchange", this.onFullscreenChangeHandler);
+    this.onMouseMoveFullscreenHandler = () => {
+      if (this.isFullscreenActive()) {
+        this.resetFullscreenIdleTimer();
+      }
+    };
+    this.hostEl.addEventListener("mousemove", this.onMouseMoveFullscreenHandler);
+    window.addEventListener("mousemove", this.onMouseMoveFullscreenHandler);
+    if (this.controlsEl) {
+      this.controlsEl.addEventListener("mouseenter", () => {
+        this.isHoveringControls = true;
+        if (this.fullscreenIdleTimeout !== null) {
+          window.clearTimeout(this.fullscreenIdleTimeout);
+          this.fullscreenIdleTimeout = null;
+        }
+        this.hostEl.removeClass("mediascribe-fullscreen-idle");
+      });
+      this.controlsEl.addEventListener("mouseleave", () => {
+        this.isHoveringControls = false;
+        if (this.isFullscreenActive()) {
+          this.resetFullscreenIdleTimer();
+        }
+      });
+    }
   }
   buildSidePanel(parentEl) {
     this.sidePanelEl = parentEl.createDiv({ cls: "mediascribe-side-panel is-hidden" });
@@ -3731,7 +3940,7 @@ var MediaScribeEmbeddedWidget = class {
     if (this.transcriptViewEl) this.transcriptViewEl.style.display = tab === "transcript" ? "flex" : "none";
     if (this.descriptionViewEl) this.descriptionViewEl.style.display = tab === "description" ? "flex" : "none";
     this.playlistToggleBtn?.toggleClass("is-active", tab === "playlist");
-    this.transcriptBtn?.toggleClass("is-active", tab === "transcript");
+    this.transcriptSideBtn?.toggleClass("is-active", tab === "transcript");
     this.descriptionBtn?.toggleClass("is-active", tab === "description");
     if (tab === "transcript") {
       this.transcriptPanel?.setVisible(true);
@@ -3749,7 +3958,7 @@ var MediaScribeEmbeddedWidget = class {
       this.sidePanelEl.style.display = "none";
     }
     this.playlistToggleBtn?.removeClass("is-active");
-    this.transcriptBtn?.removeClass("is-active");
+    this.transcriptSideBtn?.removeClass("is-active");
     this.descriptionBtn?.removeClass("is-active");
     if (!skipSave) {
       this.saveSidePanelState();
@@ -4297,6 +4506,7 @@ ${propertyKey}: "${item.source.url}"
       if (this.transcriptPanel) {
         this.transcriptPanel.updateTime(time);
       }
+      this.updateCaptions(time);
     });
     this.player.on("durationchange", (dur) => {
       if (dur > 0) {
@@ -4379,24 +4589,33 @@ ${propertyKey}: "${item.source.url}"
     if (!this.transcriptPanel) return;
     this.transcriptPanel.clear();
     this.transcriptPanel.setLoading(true);
+    this.currentTranscriptItems = [];
     try {
       if (source.isLocal && source.localFile) {
         const items = await this.transcriptService.loadLocalTranscriptForFile(source.localFile);
         if (items && items.length > 0) {
+          this.currentTranscriptItems = items;
           this.transcriptPanel.setItems(items);
+          this.updateCaptions(this.currentTime);
           return;
         }
       }
       if (source.type === "youtube" && source.videoId) {
         const items = await this.transcriptService.fetchYouTubeTranscript(source.videoId);
         if (items && items.length > 0) {
+          this.currentTranscriptItems = items;
           this.transcriptPanel.setItems(items);
+          this.updateCaptions(this.currentTime);
           return;
         }
       }
+      this.currentTranscriptItems = [];
       this.transcriptPanel.setItems([]);
+      this.updateCaptions(this.currentTime);
     } catch {
+      this.currentTranscriptItems = [];
       this.transcriptPanel.setItems([]);
+      this.updateCaptions(this.currentTime);
     }
   }
   async saveCurrentPosition(isEnded = false) {
@@ -4620,6 +4839,20 @@ ${propertyKey}: "${item.source.url}"
     }
   }
   destroy() {
+    if (this.onFullscreenChangeHandler) {
+      document.removeEventListener("fullscreenchange", this.onFullscreenChangeHandler);
+      document.removeEventListener("webkitfullscreenchange", this.onFullscreenChangeHandler);
+      this.onFullscreenChangeHandler = null;
+    }
+    if (this.onMouseMoveFullscreenHandler) {
+      this.hostEl.removeEventListener("mousemove", this.onMouseMoveFullscreenHandler);
+      window.removeEventListener("mousemove", this.onMouseMoveFullscreenHandler);
+      this.onMouseMoveFullscreenHandler = null;
+    }
+    if (this.fullscreenIdleTimeout !== null) {
+      window.clearTimeout(this.fullscreenIdleTimeout);
+      this.fullscreenIdleTimeout = null;
+    }
     window.removeEventListener("resize", this.onResizeHandler);
     window.removeEventListener("orientationchange", this.onResizeHandler);
     this.saveCurrentPosition();

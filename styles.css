@@ -1925,4 +1925,329 @@ body.mediascribe-is-resizing iframe {
   color: var(--text-normal);
 }
 
+/* ==========================================================================
+   MediaScribe Fullscreen Mode (VLC / Theater fit-to-screen style)
+   ========================================================================== */
+.mediascribe-embedded-host:fullscreen,
+.mediascribe-embedded-host.is-fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  background: #000000 !important;
+  z-index: 9999999 !important;
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+
+/* Hide header bar, resize handle, ab-loop bar, side panel, and ambient glow in fullscreen */
+.mediascribe-embedded-host:fullscreen .mediascribe-view-header,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-view-header,
+.mediascribe-embedded-host:fullscreen .mediascribe-embedded-header,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-embedded-header,
+.mediascribe-embedded-host:fullscreen .mediascribe-resize-handle,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-resize-handle,
+.mediascribe-embedded-host:fullscreen .mediascribe-ab-loop-bar,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-ab-loop-bar,
+.mediascribe-embedded-host:fullscreen .mediascribe-side-panel,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-side-panel,
+.mediascribe-embedded-host:fullscreen .mediascribe-ambient-layer,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-ambient-layer {
+  display: none !important;
+}
+
+/* Player Area & Container: Fill 100% of viewport and center contents */
+.mediascribe-embedded-host:fullscreen .mediascribe-player-area,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-player-area {
+  position: absolute !important;
+  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: #000000 !important;
+  z-index: 1 !important;
+  overflow: hidden !important;
+}
+
+.mediascribe-embedded-host:fullscreen .mediascribe-player-container,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-player-container {
+  position: relative !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  flex: none !important;
+  overflow: hidden !important;
+  background: #000000 !important;
+}
+
+/* -------------------------------------------------------------
+   HTML5 Local Video Sizing in Fullscreen:
+   Fill full height or width, perfectly centered with contain
+   ------------------------------------------------------------- */
+.mediascribe-embedded-host:fullscreen .mediascribe-video-wrapper,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-video-wrapper {
+  position: relative !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  aspect-ratio: unset !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: #000000 !important;
+}
+
+.mediascribe-embedded-host:fullscreen .mediascribe-video-wrapper video.mediascribe-media-element,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-video-wrapper video.mediascribe-media-element {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  margin: auto !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  object-fit: contain !important;
+  background: #000000 !important;
+}
+
+/* -------------------------------------------------------------
+   YouTube Sizing in Fullscreen (Standard & Clean Crop):
+   Scale to maximum screen size preserving 16:9 aspect ratio
+   ------------------------------------------------------------- */
+.mediascribe-embedded-host:fullscreen .mediascribe-player-size:not(.mediascribe-shorts-mode),
+.mediascribe-embedded-host.is-fullscreen .mediascribe-player-size:not(.mediascribe-shorts-mode) {
+  width: min(100vw, calc(100vh * 16 / 9)) !important;
+  height: min(100vh, calc(100vw * 9 / 16)) !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  aspect-ratio: 16 / 9 !important;
+  margin: auto !important;
+  position: relative !important;
+  display: block !important;
+}
+
+.mediascribe-embedded-host:fullscreen .mediascribe-cropping-div,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-cropping-div {
+  width: 100% !important;
+  height: 100% !important;
+  position: relative !important;
+}
+
+.mediascribe-embedded-host:fullscreen .mediascribe-youtube-wrapper:not(.mediascribe-clean-crop-active *),
+.mediascribe-embedded-host.is-fullscreen .mediascribe-youtube-wrapper:not(.mediascribe-clean-crop-active *) {
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  aspect-ratio: 16 / 9 !important;
+  margin: auto !important;
+}
+
+/* YouTube Shorts mode in Fullscreen (9:16) */
+.mediascribe-embedded-host:fullscreen .mediascribe-player-size.mediascribe-shorts-mode,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-player-size.mediascribe-shorts-mode {
+  width: min(100vw, calc(100vh * 9 / 16)) !important;
+  height: min(100vh, calc(100vw * 16 / 9)) !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  aspect-ratio: 9 / 16 !important;
+  margin: auto !important;
+  position: relative !important;
+  display: block !important;
+}
+
+/* -------------------------------------------------------------
+   Bottom Controls Bar in Fullscreen (VLC Floating Overlay):
+   ------------------------------------------------------------- */
+.mediascribe-embedded-host:fullscreen .mediascribe-controls-card,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-controls-card {
+  position: fixed !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: 100vw !important;
+  max-width: 100vw !important;
+  z-index: 1000000 !important;
+  padding: 32px 32px 20px 32px !important;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.92) 0%, rgba(0, 0, 0, 0.65) 55%, rgba(0, 0, 0, 0.25) 85%, transparent 100%) !important;
+  border: none !important;
+  border-bottom: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  box-sizing: border-box !important;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition: opacity 0.25s cubic-bezier(0, 0, 0.2, 1), transform 0.25s cubic-bezier(0, 0, 0.2, 1) !important;
+  --text-normal: #ffffff;
+  --text-muted: rgba(255, 255, 255, 0.75);
+  --background-modifier-hover: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+.mediascribe-embedded-host:fullscreen .mediascribe-ctrl-btn,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-ctrl-btn {
+  color: #ffffff !important;
+}
+
+.mediascribe-embedded-host:fullscreen .mediascribe-ctrl-btn:hover,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+}
+
+.mediascribe-embedded-host:fullscreen .mediascribe-time-display,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-time-display {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+/* -------------------------------------------------------------
+   Idle State: Hide Controls & Cursor on inactivity (like VLC)
+   ------------------------------------------------------------- */
+.mediascribe-embedded-host:fullscreen.mediascribe-fullscreen-idle,
+.mediascribe-embedded-host.is-fullscreen.mediascribe-fullscreen-idle {
+  cursor: none !important;
+}
+
+.mediascribe-embedded-host:fullscreen.mediascribe-fullscreen-idle *,
+.mediascribe-embedded-host.is-fullscreen.mediascribe-fullscreen-idle * {
+  cursor: none !important;
+}
+
+.mediascribe-embedded-host:fullscreen.mediascribe-fullscreen-idle .mediascribe-controls-card,
+.mediascribe-embedded-host.is-fullscreen.mediascribe-fullscreen-idle .mediascribe-controls-card {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateY(16px) !important;
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* -------------------------------------------------------------
+   Fullscreen Interaction Shield (captures mousemove & clicks over iframes)
+   ------------------------------------------------------------- */
+.mediascribe-fullscreen-shield {
+  display: none !important;
+}
+
+.mediascribe-embedded-host:fullscreen .mediascribe-fullscreen-shield,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-fullscreen-shield {
+  display: block !important;
+  position: absolute !important;
+  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 500 !important;
+  background: transparent !important;
+  pointer-events: auto !important;
+  cursor: default !important;
+}
+
+.mediascribe-embedded-host:fullscreen.mediascribe-fullscreen-idle .mediascribe-fullscreen-shield,
+.mediascribe-embedded-host.is-fullscreen.mediascribe-fullscreen-idle .mediascribe-fullscreen-shield {
+  cursor: none !important;
+}
+
+/* ==========================================================================
+   On-Screen Video Subtitles / Captions (CC)
+   ========================================================================== */
+.mediascribe-captions-overlay {
+  position: absolute !important;
+  bottom: 16px !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  width: auto !important;
+  max-width: 88% !important;
+  display: none !important;
+  align-items: center !important;
+  justify-content: center !important;
+  pointer-events: none !important;
+  z-index: 600 !important;
+  transition: bottom 0.25s ease, opacity 0.2s ease !important;
+}
+
+.mediascribe-captions-overlay.is-visible {
+  display: flex !important;
+}
+
+.mediascribe-captions-text {
+  display: inline-block !important;
+  background: rgba(0, 0, 0, 0.78) !important;
+  color: #ffffff !important;
+  font-family: var(--font-interface, sans-serif) !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  line-height: 1.45 !important;
+  padding: 5px 14px 6px !important;
+  border-radius: 6px !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5) !important;
+  letter-spacing: 0.2px !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9) !important;
+  text-align: center !important;
+  word-break: break-word !important;
+  backdrop-filter: blur(4px) !important;
+  -webkit-backdrop-filter: blur(4px) !important;
+  user-select: none !important;
+}
+
+/* Fullscreen Subtitles */
+.mediascribe-embedded-host:fullscreen .mediascribe-captions-overlay,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-captions-overlay {
+  bottom: 96px !important;
+  max-width: 82% !important;
+  z-index: 600 !important;
+}
+
+.mediascribe-embedded-host:fullscreen .mediascribe-captions-text,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-captions-text {
+  font-size: 21px !important;
+  padding: 8px 22px 9px !important;
+  border-radius: 8px !important;
+  line-height: 1.5 !important;
+}
+
+/* When controls are idle in fullscreen, shift subtitles down to lower cinema position */
+.mediascribe-embedded-host:fullscreen.mediascribe-fullscreen-idle .mediascribe-captions-overlay,
+.mediascribe-embedded-host.is-fullscreen.mediascribe-fullscreen-idle .mediascribe-captions-overlay {
+  bottom: 36px !important;
+  transition: bottom 0.35s ease !important;
+}
+
 

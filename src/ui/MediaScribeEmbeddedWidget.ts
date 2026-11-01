@@ -1,5 +1,5 @@
 import { App, MarkdownView, Menu, Notice, Platform, normalizePath, setIcon } from "obsidian";
-import { EmbeddedPosition, IMediaPlayer, MediaScribeSettings, MediaSourceInfo, PlaylistItem, StoredSidePanelState } from "../types";
+import { EmbeddedPosition, IMediaPlayer, MediaScribeSettings, MediaSourceInfo, PlaylistItem, StoredSidePanelState, TranscriptItem } from "../types";
 import { YouTubePlayer } from "../players/youtubePlayer";
 import { HTML5Player } from "../players/html5Player";
 import { ScreenshotService } from "../services/screenshotService";
@@ -78,9 +78,20 @@ export class MediaScribeEmbeddedWidget {
   private transcriptViewEl: HTMLElement | null = null;
   private descriptionViewEl: HTMLElement | null = null;
   private transcriptBtn: HTMLElement | null = null;
+  private transcriptSideBtn: HTMLElement | null = null;
   private descriptionBtn: HTMLElement | null = null;
+  private areCaptionsEnabled: boolean = false;
+  private currentTranscriptItems: TranscriptItem[] = [];
+  private captionsOverlayEl: HTMLElement | null = null;
+  private captionsTextEl: HTMLElement | null = null;
+  private currentCaptionText: string = "";
   private posBtn: HTMLButtonElement | null = null;
   private lastAppliedPosition: EmbeddedPosition = "top";
+  private onFullscreenChangeHandler: (() => void) | null = null;
+  private fullscreenIdleTimeout: number | null = null;
+  private isHoveringControls: boolean = false;
+  private onMouseMoveFullscreenHandler: (() => void) | null = null;
+  private fullscreenShieldEl: HTMLElement | null = null;
 
   private onResizeHandler = (): void => {
     if (!Platform.isDesktop) {
@@ -115,6 +126,7 @@ export class MediaScribeEmbeddedWidget {
     this.onSettingsChange = onSettingsChange;
     this.onClose = onClose;
     this.onPlay = onPlay;
+    this.areCaptionsEnabled = this.settings.enableCaptions ?? false;
 
     // Create host element and prepend to markdown view's content container
     this.hostEl = document.createElement("div");
@@ -252,6 +264,53 @@ export class MediaScribeEmbeddedWidget {
     await this.onSettingsChange(this.settings);
     this.applyPositionStyles();
     this.timelineMarkers?.refresh();
+  }
+
+  public isFullscreenActive(): boolean {
+    return Boolean(
+      document.fullscreenElement === this.hostEl ||
+      (document as any).webkitFullscreenElement === this.hostEl ||
+      document.fullscreenElement?.contains(this.hostEl)
+    );
+  }
+
+  public async toggleFullscreen(): Promise<void> {
+    try {
+      if (!this.isFullscreenActive()) {
+        if (this.hostEl.requestFullscreen) {
+          await this.hostEl.requestFullscreen();
+        } else if ((this.hostEl as any).webkitRequestFullscreen) {
+          await (this.hostEl as any).webkitRequestFullscreen();
+        }
+      } else {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if ((document as any).webkitExitFullscreen) {
+          await (document as any).webkitExitFullscreen();
+        }
+      }
+    } catch (err) {
+      console.warn("[MediaScribe] Fullscreen error:", err);
+    }
+  }
+
+  private resetFullscreenIdleTimer(): void {
+    if (!this.isFullscreenActive()) return;
+
+    this.hostEl.removeClass("mediascribe-fullscreen-idle");
+
+    if (this.fullscreenIdleTimeout !== null) {
+      window.clearTimeout(this.fullscreenIdleTimeout);
+      this.fullscreenIdleTimeout = null;
+    }
+
+    if (this.isHoveringControls) return;
+
+    this.fullscreenIdleTimeout = window.setTimeout(() => {
+      if (this.isFullscreenActive() && !this.isHoveringControls) {
+        this.hostEl.addClass("mediascribe-fullscreen-idle");
+      }
+    }, 2500);
   }
 
   public getActivePlayer(): IMediaPlayer | null {
@@ -480,6 +539,14 @@ export class MediaScribeEmbeddedWidget {
     this.playerContainerEl = playerArea.createDiv({ cls: "mediascribe-player-container" });
     this.buildSidePanel(playerArea);
 
+    // On-Screen Subtitle / Caption Overlay directly over the video
+    this.buildCaptionsOverlay(playerArea);
+
+    this.playerAreaEl.addEventListener("dblclick", (e) => {
+      if ((e.target as HTMLElement)?.closest(".mediascribe-side-panel, button, input, a")) return;
+      this.toggleFullscreen();
+    });
+
     // 3. Media Controls
     this.buildControls(this.hostEl);
 
@@ -489,8 +556,107 @@ export class MediaScribeEmbeddedWidget {
     // 5. Draggable Resize Handle
     this.buildResizeHandle(this.hostEl);
 
+    // 6. Fullscreen Shield (Interception layer over iframes for wake-on-mouse & play/pause)
+    this.buildFullscreenShield(this.hostEl);
+
     // Ensure side panel is properly positioned (in playerArea for top, or below controls for vertical)
     this.updateSidePanelPosition();
+  }
+
+  private buildFullscreenShield(parentEl: HTMLElement): void {
+    const shield = parentEl.createDiv({ cls: "mediascribe-fullscreen-shield" });
+    this.fullscreenShieldEl = shield;
+
+    let clickTimeout: number | null = null;
+    shield.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (clickTimeout !== null) {
+        window.clearTimeout(clickTimeout);
+        clickTimeout = null;
+        return;
+      }
+      clickTimeout = window.setTimeout(() => {
+        clickTimeout = null;
+        this.player?.togglePlay();
+        this.resetFullscreenIdleTimer();
+      }, 220);
+    });
+
+    shield.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      if (clickTimeout !== null) {
+        window.clearTimeout(clickTimeout);
+        clickTimeout = null;
+      }
+      this.toggleFullscreen();
+    });
+
+    shield.addEventListener("mousemove", () => {
+      this.resetFullscreenIdleTimer();
+    });
+  }
+
+  private buildCaptionsOverlay(parentEl: HTMLElement): void {
+    const overlay = parentEl.createDiv({ cls: "mediascribe-captions-overlay" });
+    this.captionsOverlayEl = overlay;
+    this.captionsTextEl = overlay.createDiv({ cls: "mediascribe-captions-text" });
+    this.captionsTextEl.setText("");
+    if (this.areCaptionsEnabled && this.currentCaptionText) {
+      this.captionsTextEl.setText(this.currentCaptionText);
+      overlay.addClass("is-visible");
+    }
+  }
+
+  private updateCaptions(time: number): void {
+    if (!this.areCaptionsEnabled || !this.captionsOverlayEl || !this.captionsTextEl) {
+      this.captionsOverlayEl?.removeClass("is-visible");
+      return;
+    }
+
+    if (!this.currentTranscriptItems || this.currentTranscriptItems.length === 0) {
+      this.captionsOverlayEl.removeClass("is-visible");
+      return;
+    }
+
+    const item = this.currentTranscriptItems.find((it) => {
+      const end = it.end > it.start ? it.end : it.start + 3.5;
+      return time >= it.start && time <= end;
+    });
+
+    if (item && item.text) {
+      const clean = item.text.replace(/<[^>]*>/g, "").trim();
+      if (clean) {
+        if (this.currentCaptionText !== clean) {
+          this.currentCaptionText = clean;
+          this.captionsTextEl.setText(clean);
+        }
+        this.captionsOverlayEl.addClass("is-visible");
+        return;
+      }
+    }
+
+    if (this.currentCaptionText !== "") {
+      this.currentCaptionText = "";
+      this.captionsTextEl.setText("");
+    }
+    this.captionsOverlayEl.removeClass("is-visible");
+  }
+
+  public async toggleCaptions(): Promise<void> {
+    this.areCaptionsEnabled = !this.areCaptionsEnabled;
+    this.transcriptBtn?.toggleClass("is-active", this.areCaptionsEnabled);
+    this.settings.enableCaptions = this.areCaptionsEnabled;
+    await this.onSettingsChange(this.settings);
+
+    if (this.areCaptionsEnabled) {
+      new Notice("MediaScribe: Subtitles ON");
+      this.updateCaptions(this.currentTime);
+    } else {
+      new Notice("MediaScribe: Subtitles OFF");
+      this.captionsOverlayEl?.removeClass("is-visible");
+      this.currentCaptionText = "";
+      if (this.captionsTextEl) this.captionsTextEl.setText("");
+    }
   }
 
   private buildHeader(parentEl: HTMLElement): void {
@@ -529,6 +695,16 @@ export class MediaScribeEmbeddedWidget {
     setIcon(this.descriptionBtn, "info");
     this.descriptionBtn.addEventListener("click", () => {
       this.toggleSideTab("description");
+    });
+
+    // Full Transcript Drawer Toggle (opens transcript in side panel)
+    this.transcriptSideBtn = actions.createEl("button", {
+      cls: "mediascribe-btn-icon",
+      attr: { title: "Toggle Full Transcript Panel" }
+    });
+    setIcon(this.transcriptSideBtn, "scroll-text");
+    this.transcriptSideBtn.addEventListener("click", () => {
+      this.toggleSideTab("transcript");
     });
 
     // Refresh Timeline pins
@@ -684,6 +860,7 @@ export class MediaScribeEmbeddedWidget {
         const percent = this.duration > 0 ? (this.currentTime / this.duration) * 100 : 0;
         this.progressSlider.style.setProperty("--progress-percent", `${percent.toFixed(2)}%`);
         this.updateTimeDisplay();
+        this.updateCaptions(this.currentTime);
       }
     });
 
@@ -861,14 +1038,14 @@ export class MediaScribeEmbeddedWidget {
     setIcon(snapBtn, "camera");
     snapBtn.addEventListener("click", () => this.captureScreenshot());
 
-    // Transcript / Subtitles Toggle
+    // On-Screen Subtitles / Captions Toggle (CC)
     this.transcriptBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-cc-btn",
-      attr: { title: "Subtitles / Transcript Panel" }
+      cls: `mediascribe-ctrl-btn mediascribe-cc-btn ${this.areCaptionsEnabled ? "is-active" : ""}`,
+      attr: { title: "Toggle Video Subtitles (CC)" }
     });
     setIcon(this.transcriptBtn, "subtitles");
     this.transcriptBtn.addEventListener("click", () => {
-      this.toggleSideTab("transcript");
+      this.toggleCaptions();
     });
 
     // A-B Loop Toggle
@@ -882,6 +1059,64 @@ export class MediaScribeEmbeddedWidget {
       loopBtn.toggleClass("is-active", this.isLooping);
       this.loopBarEl?.toggleClass("is-hidden", !this.isLooping);
     });
+
+    // Fullscreen Toggle
+    const fullscreenBtn = rightControls.createEl("button", {
+      cls: "mediascribe-ctrl-btn",
+      attr: { title: "Toggle Fullscreen" }
+    });
+    setIcon(fullscreenBtn, "maximize");
+
+    this.onFullscreenChangeHandler = () => {
+      const isFs = this.isFullscreenActive();
+      fullscreenBtn.empty();
+      setIcon(fullscreenBtn, isFs ? "minimize" : "maximize");
+      fullscreenBtn.setAttribute("title", isFs ? "Exit Fullscreen" : "Toggle Fullscreen");
+      this.hostEl.toggleClass("is-fullscreen", isFs);
+
+      if (isFs) {
+        this.resetFullscreenIdleTimer();
+      } else {
+        if (this.fullscreenIdleTimeout !== null) {
+          window.clearTimeout(this.fullscreenIdleTimeout);
+          this.fullscreenIdleTimeout = null;
+        }
+        this.hostEl.removeClass("mediascribe-fullscreen-idle");
+      }
+    };
+
+    fullscreenBtn.addEventListener("click", () => {
+      this.toggleFullscreen();
+    });
+
+    document.addEventListener("fullscreenchange", this.onFullscreenChangeHandler);
+    document.addEventListener("webkitfullscreenchange", this.onFullscreenChangeHandler);
+
+    this.onMouseMoveFullscreenHandler = () => {
+      if (this.isFullscreenActive()) {
+        this.resetFullscreenIdleTimer();
+      }
+    };
+    this.hostEl.addEventListener("mousemove", this.onMouseMoveFullscreenHandler);
+    window.addEventListener("mousemove", this.onMouseMoveFullscreenHandler);
+
+    if (this.controlsEl) {
+      this.controlsEl.addEventListener("mouseenter", () => {
+        this.isHoveringControls = true;
+        if (this.fullscreenIdleTimeout !== null) {
+          window.clearTimeout(this.fullscreenIdleTimeout);
+          this.fullscreenIdleTimeout = null;
+        }
+        this.hostEl.removeClass("mediascribe-fullscreen-idle");
+      });
+
+      this.controlsEl.addEventListener("mouseleave", () => {
+        this.isHoveringControls = false;
+        if (this.isFullscreenActive()) {
+          this.resetFullscreenIdleTimer();
+        }
+      });
+    }
   }
 
   private buildSidePanel(parentEl: HTMLElement): void {
@@ -922,7 +1157,7 @@ export class MediaScribeEmbeddedWidget {
     if (this.descriptionViewEl) this.descriptionViewEl.style.display = tab === "description" ? "flex" : "none";
 
     this.playlistToggleBtn?.toggleClass("is-active", tab === "playlist");
-    this.transcriptBtn?.toggleClass("is-active", tab === "transcript");
+    this.transcriptSideBtn?.toggleClass("is-active", tab === "transcript");
     this.descriptionBtn?.toggleClass("is-active", tab === "description");
 
     if (tab === "transcript") {
@@ -943,7 +1178,7 @@ export class MediaScribeEmbeddedWidget {
       this.sidePanelEl.style.display = "none";
     }
     this.playlistToggleBtn?.removeClass("is-active");
-    this.transcriptBtn?.removeClass("is-active");
+    this.transcriptSideBtn?.removeClass("is-active");
     this.descriptionBtn?.removeClass("is-active");
 
     if (!skipSave) {
@@ -1616,6 +1851,8 @@ export class MediaScribeEmbeddedWidget {
       if (this.transcriptPanel) {
         this.transcriptPanel.updateTime(time);
       }
+
+      this.updateCaptions(time);
     });
 
     this.player.on("durationchange", (dur: number) => {
@@ -1711,12 +1948,15 @@ export class MediaScribeEmbeddedWidget {
     if (!this.transcriptPanel) return;
     this.transcriptPanel.clear();
     this.transcriptPanel.setLoading(true);
+    this.currentTranscriptItems = [];
 
     try {
       if (source.isLocal && source.localFile) {
         const items = await this.transcriptService.loadLocalTranscriptForFile(source.localFile);
         if (items && items.length > 0) {
+          this.currentTranscriptItems = items;
           this.transcriptPanel.setItems(items);
+          this.updateCaptions(this.currentTime);
           return;
         }
       }
@@ -1724,14 +1964,20 @@ export class MediaScribeEmbeddedWidget {
       if (source.type === "youtube" && source.videoId) {
         const items = await this.transcriptService.fetchYouTubeTranscript(source.videoId);
         if (items && items.length > 0) {
+          this.currentTranscriptItems = items;
           this.transcriptPanel.setItems(items);
+          this.updateCaptions(this.currentTime);
           return;
         }
       }
 
+      this.currentTranscriptItems = [];
       this.transcriptPanel.setItems([]);
+      this.updateCaptions(this.currentTime);
     } catch {
+      this.currentTranscriptItems = [];
       this.transcriptPanel.setItems([]);
+      this.updateCaptions(this.currentTime);
     }
   }
 
@@ -1991,6 +2237,20 @@ export class MediaScribeEmbeddedWidget {
   }
 
   public destroy(): void {
+    if (this.onFullscreenChangeHandler) {
+      document.removeEventListener("fullscreenchange", this.onFullscreenChangeHandler);
+      document.removeEventListener("webkitfullscreenchange", this.onFullscreenChangeHandler);
+      this.onFullscreenChangeHandler = null;
+    }
+    if (this.onMouseMoveFullscreenHandler) {
+      this.hostEl.removeEventListener("mousemove", this.onMouseMoveFullscreenHandler);
+      window.removeEventListener("mousemove", this.onMouseMoveFullscreenHandler);
+      this.onMouseMoveFullscreenHandler = null;
+    }
+    if (this.fullscreenIdleTimeout !== null) {
+      window.clearTimeout(this.fullscreenIdleTimeout);
+      this.fullscreenIdleTimeout = null;
+    }
     window.removeEventListener("resize", this.onResizeHandler);
     window.removeEventListener("orientationchange", this.onResizeHandler);
     this.saveCurrentPosition();

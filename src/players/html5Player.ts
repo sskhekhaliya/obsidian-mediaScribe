@@ -69,10 +69,20 @@ export class HTML5Player extends BasePlayer {
       });
 
       wrapper.addEventListener("dblclick", () => {
+        const host = wrapper.closest(".mediascribe-embedded-host") as HTMLElement | null;
+        const target = host || wrapper;
         if (!document.fullscreenElement) {
-          wrapper.requestFullscreen?.().catch(() => {});
+          if (target.requestFullscreen) {
+            target.requestFullscreen().catch(() => {});
+          } else if ((target as any).webkitRequestFullscreen) {
+            (target as any).webkitRequestFullscreen();
+          }
         } else {
-          document.exitFullscreen?.().catch(() => {});
+          if (document.exitFullscreen) {
+            document.exitFullscreen().catch(() => {});
+          } else if ((document as any).webkitExitFullscreen) {
+            (document as any).webkitExitFullscreen();
+          }
         }
       });
     }
