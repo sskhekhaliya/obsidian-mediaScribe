@@ -1,21 +1,24 @@
 import { App, MarkdownView, Notice } from "obsidian";
 import { IMediaPlayer, MediaScribeSettings, MediaSourceInfo } from "../types";
-import { formatSeconds, parseTimestamp } from "../utils/time";
+import { formatSeconds, parseTimestamp, parseTimestampRange } from "../utils/time";
 
 export class TimestampService {
   private settings: MediaScribeSettings;
   private playerGetter: () => IMediaPlayer | null;
   private sourceGetter?: () => MediaSourceInfo | null;
+  private loopSetter?: (start: number, end: number) => void;
 
   constructor(
     _app: App,
     settings: MediaScribeSettings,
     playerGetter: () => IMediaPlayer | null,
-    sourceGetter?: () => MediaSourceInfo | null
+    sourceGetter?: () => MediaSourceInfo | null,
+    loopSetter?: (start: number, end: number) => void
   ) {
     this.settings = settings;
     this.playerGetter = playerGetter;
     this.sourceGetter = sourceGetter;
+    this.loopSetter = loopSetter;
   }
 
   public updateSettings(settings: MediaScribeSettings): void {
@@ -50,13 +53,9 @@ export class TimestampService {
         return `[${formattedTime}](#t=${secInt})`;
       case "wikilink":
         return `[[#t=${secInt}|${formattedTime}]]`;
-      case "bold":
-        return `**${formattedTime}**`;
-      case "plain":
-        return formattedTime;
       case "bracket":
       default:
-        return `[${formattedTime}]`;
+        return `[${formattedTime}]()`;
     }
   }
 
@@ -87,9 +86,15 @@ export class TimestampService {
   }
 
   /**
-   * Seeks the player if a timestamp string is clicked
+   * Seeks the player if a timestamp string is clicked or sets loop if range is clicked
    */
   public handleTimestampClick(text: string): boolean {
+    const range = parseTimestampRange(text);
+    if (range && this.loopSetter) {
+      this.loopSetter(range.start, range.end);
+      return true;
+    }
+
     const seconds = parseTimestamp(text);
     if (seconds !== null) {
       const player = this.playerGetter();

@@ -200,7 +200,9 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
     });
     containerEl.createEl("h3", { text: "Timestamps" });
     new import_obsidian2.Setting(containerEl).setName("Timestamp Format").setDesc("Syntax used when inserting timestamps into your notes.").addDropdown((drop) => {
-      drop.addOption("full_url_link", "[01:23](https://youtu.be/...?t=83) (Direct Video Link - Portable)").addOption("markdown_link", "[01:23](#t=83) (Internal Anchor Link)").addOption("bracket", "[01:23] (Clean Bracket)").addOption("wikilink", "[[#t=83|01:23]] (Obsidian Wikilink)").addOption("bold", "**01:23** (Bold text)").addOption("plain", "01:23 (Plain text)").setValue(this.plugin.settings.timestampFormat).onChange(async (val) => {
+      drop.addOption("full_url_link", "[01:23](https://youtu.be/...?t=83) (Direct Video Link - Portable)").addOption("markdown_link", "[01:23](#t=83) (Internal Anchor Link)").addOption("bracket", "[01:23]() (Clean Stamp)").addOption("wikilink", "[[#t=83|01:23]] (Obsidian Wikilink)");
+      const current = this.plugin.settings.timestampFormat === "bold" || this.plugin.settings.timestampFormat === "plain" ? "bracket" : this.plugin.settings.timestampFormat;
+      drop.setValue(current).onChange(async (val) => {
         this.plugin.settings.timestampFormat = val;
         await this.plugin.saveSettings();
       });
@@ -346,7 +348,7 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
     });
     const creditsText = supportCard.createEl("div");
     creditsText.style.cssText = "margin-top: 10px; font-size: 11px; color: var(--text-muted);";
-    creditsText.setText("Created with \u2764\uFE0F by SSKhekhaliya");
+    creditsText.setText("Created by SSKhekhaliya");
   }
 };
 
@@ -374,7 +376,7 @@ function parseTimestamp(input, allowBareSeconds = false) {
   if (str.startsWith("(") && str.endsWith(")")) {
     str = str.substring(1, str.length - 1).trim();
   }
-  const mdMatch = str.match(/^\[([^\]]+)\](?:\(([^)]*)\))?$/);
+  const mdMatch = str.match(/^\[([^\]]+)\]\(([^)]*)\)$/);
   if (mdMatch) {
     if (mdMatch[2]) {
       const fromUrl = parseTimestamp(mdMatch[2], true);
@@ -422,7 +424,7 @@ function parseTimestamp(input, allowBareSeconds = false) {
     }
     return null;
   }
-  const colons = str.match(/^(?:\[|\()?(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\]|\))?$/);
+  const colons = str.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
   if (colons) {
     if (colons[3] !== void 0) {
       const h = parseInt(colons[1], 10);
@@ -436,6 +438,40 @@ function parseTimestamp(input, allowBareSeconds = false) {
     }
   }
   return null;
+}
+function parseTimestampRange(input, allowBareBrackets = false) {
+  if (!input) return null;
+  let str = input.trim();
+  const mdMatch = str.match(/^\[([^\]]+)\]\(([^)]*)\)$/);
+  if (mdMatch) {
+    str = mdMatch[1].trim();
+  } else if (str.startsWith("[[") && str.endsWith("]]")) {
+    str = str.substring(2, str.length - 2).trim();
+  } else if (str.startsWith("[") && str.endsWith("]")) {
+    if (!allowBareBrackets) {
+      return null;
+    }
+    str = str.substring(1, str.length - 1).trim();
+  } else if (str.startsWith("(") && str.endsWith(")")) {
+    str = str.substring(1, str.length - 1).trim();
+  }
+  const splitMatch = str.match(/^(.+?)\s*(?:[-–—~]|\bto\b)\s*(.+)$/i);
+  if (!splitMatch) return null;
+  const rawStart = splitMatch[1].trim();
+  const rawEnd = splitMatch[2].trim();
+  const startSec = parseTimestamp(rawStart, true);
+  const endSec = parseTimestamp(rawEnd, true);
+  if (startSec === null || endSec === null) {
+    return null;
+  }
+  const min = Math.min(startSec, endSec);
+  const max = Math.max(startSec, endSec);
+  return {
+    start: min,
+    end: max,
+    rawStart,
+    rawEnd
+  };
 }
 function extractTimestampsFromText(text) {
   const results = [];
@@ -453,11 +489,33 @@ function extractTimestampsFromText(text) {
       charOffset += line.length + 1;
       continue;
     }
-    const lineForMatching = line.replace(/`[^`]+`/g, (m) => " ".repeat(m.length));
-    const regex = /(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\](?:\([^)]*\))?|\[\[(?:#t=[^|]+\|)?(\d{1,2}:\d{2}(?::\d{2})?)\]\]|(?<=\s|^)(\d{1,2}:\d{2}(?::\d{2})?)(?=\s|$|[.,!?]))/g;
+    let lineForMatching = line.replace(/`[^`]+`/g, (m) => " ".repeat(m.length));
+    const rangeRegex = /(?:\[\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\]|\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\([^)]*\))/g;
+    let rMatch;
+    while ((rMatch = rangeRegex.exec(lineForMatching)) !== null) {
+      const sStr = rMatch[1] || rMatch[3];
+      const eStr = rMatch[2] || rMatch[4];
+      if (sStr && eStr) {
+        const startSec = parseTimestamp(sStr);
+        const endSec = parseTimestamp(eStr);
+        if (startSec !== null && endSec !== null) {
+          results.push({
+            timeSeconds: Math.min(startSec, endSec),
+            displayText: `${sStr} - ${eStr}`,
+            index: charOffset + rMatch.index,
+            length: rMatch[0].length,
+            lineContent: line.trim(),
+            isRange: true,
+            endSeconds: Math.max(startSec, endSec)
+          });
+        }
+      }
+    }
+    lineForMatching = lineForMatching.replace(rangeRegex, (m) => " ".repeat(m.length));
+    const regex = /(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\]\([^)]*\)|\[\[(?:#t=[^|]+\|)?(\d{1,2}:\d{2}(?::\d{2})?)\]\])/g;
     let match;
     while ((match = regex.exec(lineForMatching)) !== null) {
-      const timeStr = match[1] || match[2] || match[3];
+      const timeStr = match[1] || match[2];
       if (timeStr) {
         const seconds = parseTimestamp(timeStr);
         if (seconds !== null) {
@@ -1076,10 +1134,11 @@ ${linkText}
 // src/services/timestampService.ts
 var import_obsidian5 = require("obsidian");
 var TimestampService = class {
-  constructor(_app, settings, playerGetter, sourceGetter) {
+  constructor(_app, settings, playerGetter, sourceGetter, loopSetter) {
     this.settings = settings;
     this.playerGetter = playerGetter;
     this.sourceGetter = sourceGetter;
+    this.loopSetter = loopSetter;
   }
   updateSettings(settings) {
     this.settings = settings;
@@ -1111,13 +1170,9 @@ var TimestampService = class {
         return `[${formattedTime}](#t=${secInt})`;
       case "wikilink":
         return `[[#t=${secInt}|${formattedTime}]]`;
-      case "bold":
-        return `**${formattedTime}**`;
-      case "plain":
-        return formattedTime;
       case "bracket":
       default:
-        return `[${formattedTime}]`;
+        return `[${formattedTime}]()`;
     }
   }
   /**
@@ -1144,9 +1199,14 @@ var TimestampService = class {
     }
   }
   /**
-   * Seeks the player if a timestamp string is clicked
+   * Seeks the player if a timestamp string is clicked or sets loop if range is clicked
    */
   handleTimestampClick(text) {
+    const range = parseTimestampRange(text);
+    if (range && this.loopSetter) {
+      this.loopSetter(range.start, range.end);
+      return true;
+    }
     const seconds = parseTimestamp(text);
     if (seconds !== null) {
       const player = this.playerGetter();
@@ -2892,7 +2952,7 @@ var TranscriptPanel = class {
     const activeView = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
     if (activeView && activeView.editor) {
       const timeStr = formatSeconds(item.start);
-      const quoteMarkdown = `> [${timeStr}] ${item.text}
+      const quoteMarkdown = `> [${timeStr}]() ${item.text}
 
 `;
       activeView.editor.replaceSelection(quoteMarkdown);
@@ -2902,11 +2962,11 @@ var TranscriptPanel = class {
     const activeView = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
     if (!activeView || !activeView.editor) return;
     let transcriptMarkdown = `
-### \u{1F4DC} Video Transcript
+### Video Transcript
 
 `;
     for (const item of this.items) {
-      transcriptMarkdown += `- **[${formatSeconds(item.start)}]** ${item.text}
+      transcriptMarkdown += `- [${formatSeconds(item.start)}]() ${item.text}
 `;
     }
     transcriptMarkdown += `
@@ -2918,10 +2978,11 @@ var TranscriptPanel = class {
 // src/ui/TimelineMarkers.ts
 var import_obsidian12 = require("obsidian");
 var TimelineMarkers = class {
-  constructor(parentEl, app, playerGetter) {
+  constructor(parentEl, app, playerGetter, onRangeClick) {
     this.duration = 0;
     this.app = app;
     this.playerGetter = playerGetter;
+    this.onRangeClick = onRangeClick;
     this.containerEl = parentEl.createDiv({ cls: "mediascribe-timeline-markers" });
   }
   setDuration(duration) {
@@ -2939,15 +3000,19 @@ var TimelineMarkers = class {
       if (ts.timeSeconds > this.duration) continue;
       const percent = ts.timeSeconds / this.duration * 100;
       const marker = this.containerEl.createDiv({
-        cls: "mediascribe-marker-pin",
+        cls: ts.isRange ? "mediascribe-marker-pin mediascribe-marker-pin-range" : "mediascribe-marker-pin",
         attr: {
           style: `left: ${percent}%;`
         }
       });
-      const previewText = ts.lineContent ? `[${formatSeconds(ts.timeSeconds)}] ${ts.lineContent}` : formatSeconds(ts.timeSeconds);
+      const previewText = ts.isRange && ts.endSeconds !== void 0 ? `[${ts.displayText}] Repeat Loop: ${ts.lineContent || ""}` : ts.lineContent ? `[${formatSeconds(ts.timeSeconds)}] ${ts.lineContent}` : formatSeconds(ts.timeSeconds);
       marker.setAttribute("aria-label", previewText);
       marker.addEventListener("click", (e) => {
         e.stopPropagation();
+        if (ts.isRange && ts.endSeconds !== void 0 && this.onRangeClick) {
+          this.onRangeClick(ts.timeSeconds, ts.endSeconds);
+          return;
+        }
         const player = this.playerGetter();
         if (player) {
           player.seekTo(ts.timeSeconds);
@@ -3071,6 +3136,10 @@ var MediaScribeEmbeddedWidget = class {
     this.loopA = null;
     this.loopB = null;
     this.isLooping = false;
+    this.loopSpanA = null;
+    this.loopSpanB = null;
+    this.loopInputEl = null;
+    this.loopToggleBtn = null;
     this.isSidePanelOpen = false;
     this.activeSideTab = "playlist";
     this.isCollapsed = false;
@@ -3703,7 +3772,12 @@ var MediaScribeEmbeddedWidget = class {
         this.updateCaptions(this.currentTime);
       }
     });
-    this.timelineMarkers = new TimelineMarkers(scrubberContainer, this.app, () => this.player);
+    this.timelineMarkers = new TimelineMarkers(
+      scrubberContainer,
+      this.app,
+      () => this.player,
+      (start, end) => this.setLoopRange(start, end, true)
+    );
     const buttonsRow = this.controlsEl.createDiv({ cls: "mediascribe-buttons-row" });
     const leftControls = buttonsRow.createDiv({ cls: "mediascribe-ctrl-group mediascribe-ctrl-left" });
     this.playBtn = leftControls.createEl("button", {
@@ -3854,15 +3928,13 @@ var MediaScribeEmbeddedWidget = class {
     this.transcriptBtn.addEventListener("click", () => {
       this.toggleCaptions();
     });
-    const loopBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
+    this.loopToggleBtn = rightControls.createEl("button", {
+      cls: `mediascribe-ctrl-btn ${this.isLooping ? "is-active" : ""}`,
       attr: { title: "A-B Repeat Loop" }
     });
-    (0, import_obsidian14.setIcon)(loopBtn, "repeat");
-    loopBtn.addEventListener("click", () => {
-      this.isLooping = !this.isLooping;
-      loopBtn.toggleClass("is-active", this.isLooping);
-      this.loopBarEl?.toggleClass("is-hidden", !this.isLooping);
+    (0, import_obsidian14.setIcon)(this.loopToggleBtn, "repeat");
+    this.loopToggleBtn.addEventListener("click", () => {
+      this.toggleLoop();
     });
     const fullscreenBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn",
@@ -4426,35 +4498,131 @@ ${propertyKey}: "${item.source.url}"
       }
     }
   }
+  toggleLoop() {
+    this.isLooping = !this.isLooping;
+    this.loopToggleBtn?.toggleClass("is-active", this.isLooping);
+    this.loopBarEl?.toggleClass("is-hidden", !this.isLooping);
+  }
+  setLoopRange(start, end, autoSeek = true) {
+    if (isNaN(start) || isNaN(end)) return;
+    let min = Math.min(start, end);
+    let max = Math.max(start, end);
+    if (min === max) {
+      max = min + 1;
+    }
+    this.loopA = min;
+    this.loopB = max;
+    this.isLooping = true;
+    if (this.loopSpanA) {
+      this.loopSpanA.setText(formatSeconds(this.loopA));
+    }
+    if (this.loopSpanB) {
+      this.loopSpanB.setText(formatSeconds(this.loopB));
+    }
+    if (this.loopInputEl) {
+      this.loopInputEl.value = `[${formatSeconds(this.loopA)} - ${formatSeconds(this.loopB)}]`;
+    }
+    if (this.loopToggleBtn) {
+      this.loopToggleBtn.addClass("is-active");
+    }
+    if (this.loopBarEl) {
+      this.loopBarEl.removeClass("is-hidden");
+    }
+    if (autoSeek && this.player) {
+      this.player.seekTo(this.loopA);
+      void this.player.play();
+      this.updatePlayState(true);
+    }
+    new import_obsidian14.Notice(`MediaScribe: Loop set [${formatSeconds(this.loopA)} - ${formatSeconds(this.loopB)}]`);
+  }
+  clearLoop() {
+    this.loopA = null;
+    this.loopB = null;
+    this.isLooping = false;
+    if (this.loopSpanA) this.loopSpanA.setText("--:--");
+    if (this.loopSpanB) this.loopSpanB.setText("--:--");
+    if (this.loopInputEl) this.loopInputEl.value = "";
+    if (this.loopToggleBtn) this.loopToggleBtn.removeClass("is-active");
+    new import_obsidian14.Notice("MediaScribe: A-B loop cleared.");
+  }
+  updateLoopInputValue() {
+    if (this.loopA !== null && this.loopB !== null && this.loopInputEl) {
+      this.loopInputEl.value = `[${formatSeconds(this.loopA)} - ${formatSeconds(this.loopB)}]`;
+    }
+  }
   buildLoopBar(parentEl) {
     this.loopBarEl = parentEl.createDiv({ cls: "mediascribe-loop-bar is-hidden" });
     const title = this.loopBarEl.createSpan({ cls: "mediascribe-loop-title" });
     title.setText("A-B Loop:");
     const btnA = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Set A" });
-    const spanA = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
+    this.loopSpanA = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
     btnA.addEventListener("click", async () => {
       if (this.player) {
         this.loopA = await this.player.getCurrentTime();
-        spanA.setText(formatSeconds(this.loopA));
+        this.loopSpanA?.setText(formatSeconds(this.loopA));
+        if (this.loopA !== null && this.loopB !== null && this.loopA > this.loopB) {
+          const temp = this.loopA;
+          this.loopA = this.loopB;
+          this.loopB = temp;
+          this.loopSpanA?.setText(formatSeconds(this.loopA));
+          this.loopSpanB?.setText(formatSeconds(this.loopB));
+        }
+        this.updateLoopInputValue();
         new import_obsidian14.Notice(`MediaScribe: Point A set to ${formatSeconds(this.loopA)}`);
       }
     });
     const btnB = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Set B" });
-    const spanB = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
+    this.loopSpanB = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
     btnB.addEventListener("click", async () => {
       if (this.player) {
         this.loopB = await this.player.getCurrentTime();
-        spanB.setText(formatSeconds(this.loopB));
+        this.loopSpanB?.setText(formatSeconds(this.loopB));
+        if (this.loopA !== null && this.loopB !== null && this.loopA > this.loopB) {
+          const temp = this.loopA;
+          this.loopA = this.loopB;
+          this.loopB = temp;
+          this.loopSpanA?.setText(formatSeconds(this.loopA));
+          this.loopSpanB?.setText(formatSeconds(this.loopB));
+        }
+        this.updateLoopInputValue();
         new import_obsidian14.Notice(`MediaScribe: Point B set to ${formatSeconds(this.loopB)}`);
       }
     });
+    const inputWrapper = this.loopBarEl.createDiv({ cls: "mediascribe-loop-input-wrapper" });
+    this.loopInputEl = inputWrapper.createEl("input", {
+      cls: "mediascribe-loop-input",
+      type: "text",
+      attr: {
+        placeholder: "[00:15 - 00:45]",
+        title: "Enter [starttime - endtime] and press Enter to set loop"
+      }
+    });
+    const applyRange = () => {
+      if (!this.loopInputEl) return;
+      const text = this.loopInputEl.value.trim();
+      if (!text) return;
+      const range = parseTimestampRange(text, true);
+      if (range) {
+        this.setLoopRange(range.start, range.end, true);
+      } else {
+        new import_obsidian14.Notice("MediaScribe: Invalid format. Use [starttime - endtime] (e.g. [01:23 - 02:45])");
+      }
+    };
+    this.loopInputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyRange();
+      }
+    });
+    const setBtn = inputWrapper.createEl("button", {
+      cls: "mediascribe-btn-sm",
+      text: "Set",
+      attr: { title: "Apply loop range" }
+    });
+    setBtn.addEventListener("click", () => applyRange());
     const clearBtn = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Clear" });
     clearBtn.addEventListener("click", () => {
-      this.loopA = null;
-      this.loopB = null;
-      spanA.setText("--:--");
-      spanB.setText("--:--");
-      new import_obsidian14.Notice("MediaScribe: A-B loop cleared.");
+      this.clearLoop();
     });
   }
   async captureScreenshot() {
@@ -4928,6 +5096,15 @@ var EmbeddedPlayerManager = class {
   getActiveSource() {
     return this.getActiveEmbeddedWidget()?.getCurrentSource() || null;
   }
+  setLoopRange(start, end, autoSeek = true) {
+    const widget = this.getActiveEmbeddedWidget();
+    if (widget) {
+      widget.uncollapse();
+      widget.setLoopRange(start, end, autoSeek);
+      return true;
+    }
+    return false;
+  }
   /**
    * Inspects a MarkdownView and mounts or dismounts the embedded player
    */
@@ -5128,10 +5305,59 @@ var EmbeddedPlayerManager = class {
 };
 
 // src/main.ts
+function isOfficialTimestampLink(a) {
+  const href = a.getAttribute("href") || "";
+  const dataHref = a.getAttribute("data-href") || "";
+  const text = a.textContent?.trim() || "";
+  if (href === "" || href === "#" || href === "()" || href.endsWith("#")) return true;
+  if (href.startsWith("#t=") || dataHref.startsWith("#t=") || href.startsWith("http://") || href.startsWith("https://")) return true;
+  if (href && href !== text && decodeURI(href) !== text && !a.classList.contains("is-unresolved")) return true;
+  return false;
+}
+function getTimestampFromLinkElement(linkEl, cmLine) {
+  const text = linkEl.textContent?.trim() || "";
+  const directRange = parseTimestampRange(text);
+  if (directRange) return { type: "range", start: directRange.start, end: directRange.end };
+  const directSec = parseTimestamp(text);
+  if (directSec !== null) return { type: "single", text };
+  let prev = linkEl.previousElementSibling;
+  let steps = 0;
+  while (prev && steps < 5) {
+    const pText = prev.textContent?.trim() || "";
+    const pRange = parseTimestampRange(pText);
+    if (pRange) return { type: "range", start: pRange.start, end: pRange.end };
+    const pSec = parseTimestamp(pText);
+    if (pSec !== null) return { type: "single", text: pText };
+    prev = prev.previousElementSibling;
+    steps++;
+  }
+  let next = linkEl.nextElementSibling;
+  steps = 0;
+  while (next && steps < 5) {
+    const nText = next.textContent?.trim() || "";
+    const nRange = parseTimestampRange(nText);
+    if (nRange) return { type: "range", start: nRange.start, end: nRange.end };
+    const nSec = parseTimestamp(nText);
+    if (nSec !== null) return { type: "single", text: nText };
+    next = next.nextElementSibling;
+    steps++;
+  }
+  const lineText = cmLine.textContent || "";
+  const timestamps = extractTimestampsFromText(lineText);
+  if (timestamps.length === 1 && (text === "" || text === "()" || text === "(" || text === ")" || linkEl.classList.contains("cm-url") || linkEl.classList.contains("cm-formatting-link"))) {
+    const ts = timestamps[0];
+    if (ts.isRange && ts.endSeconds !== void 0) {
+      return { type: "range", start: ts.timeSeconds, end: ts.endSeconds };
+    }
+    return { type: "single", text: ts.displayText };
+  }
+  return null;
+}
 var MediaScribePlugin = class extends import_obsidian16.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
+    this.lastDetectedRangeKey = "";
   }
   async onload() {
     await this.loadSettings();
@@ -5144,7 +5370,8 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       this.app,
       this.settings,
       () => this.getActivePlayer(),
-      () => this.embeddedManager?.getActiveSource() || null
+      () => this.embeddedManager?.getActiveSource() || null,
+      (start, end) => this.handleSetLoopRange(start, end, true)
     );
     this.embeddedManager = new EmbeddedPlayerManager(
       this,
@@ -5177,10 +5404,12 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
     );
     this.registerPluginCommands();
     this.registerTimestampClickHandler();
+    this.setupOpenLinkTextGuard();
     this.setupMarkdownPostProcessor();
     this.registerEvent(
-      this.app.workspace.on("editor-change", () => {
+      this.app.workspace.on("editor-change", (editor) => {
         this.typingScribeService.handleEditorChange();
+        this.handleEditorLoopRangeDetection(editor);
       })
     );
     this.registerEvent(
@@ -5429,9 +5658,149 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
         this.typingScribeService.toggle();
       }
     });
+    this.addCommand({
+      id: "mediascribe-set-loop-range",
+      name: "Set A-B Loop range [starttime - endtime]...",
+      callback: () => {
+        const activeView = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+        let defaultVal = "";
+        if (activeView && activeView.editor) {
+          const selection = activeView.editor.getSelection().trim();
+          if (selection && (parseTimestampRange(selection) || parseTimestamp(selection))) {
+            defaultVal = selection;
+          }
+        }
+        const input = window.prompt("Enter loop range [starttime - endtime] (e.g. [01:23 - 02:45]):", defaultVal);
+        if (input && input.trim()) {
+          const range = parseTimestampRange(input.trim(), true);
+          if (range) {
+            this.handleSetLoopRange(range.start, range.end, true);
+          } else {
+            new import_obsidian16.Notice("MediaScribe: Invalid format. Please use [starttime - endtime] (e.g. 01:23 - 02:45)");
+          }
+        }
+      }
+    });
+  }
+  handleEditorLoopRangeDetection(editor) {
+    if (!editor || typeof editor.getCursor !== "function") return;
+    try {
+      const cursor = editor.getCursor();
+      const currentLine = editor.getLine(cursor.line) || "";
+      const textBefore = currentLine.substring(0, cursor.ch);
+      const linkMatch = textBefore.match(
+        /(?:\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\([^)]*\)|\[\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\])$/i
+      );
+      let matchedStart = null;
+      let matchedEnd = null;
+      let rangeKey = "";
+      if (linkMatch) {
+        matchedStart = linkMatch[1] || linkMatch[3];
+        matchedEnd = linkMatch[2] || linkMatch[4];
+        rangeKey = `link:${cursor.line}:${matchedStart}-${matchedEnd}`;
+      } else if (cursor.line > 0 && cursor.ch === 0) {
+        const prevLine = editor.getLine(cursor.line - 1) || "";
+        const prevMatch = prevLine.match(
+          /(?:\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\([^)]*\)|\[\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\])/i
+        );
+        if (prevMatch) {
+          matchedStart = prevMatch[1] || prevMatch[3];
+          matchedEnd = prevMatch[2] || prevMatch[4];
+          rangeKey = `enter:${cursor.line - 1}:${matchedStart}-${matchedEnd}`;
+        }
+      }
+      if (matchedStart && matchedEnd && rangeKey && rangeKey !== this.lastDetectedRangeKey) {
+        const startSec = parseTimestamp(matchedStart);
+        const endSec = parseTimestamp(matchedEnd);
+        if (startSec !== null && endSec !== null) {
+          this.lastDetectedRangeKey = rangeKey;
+          this.handleSetLoopRange(startSec, endSec, false);
+        }
+      }
+    } catch {
+    }
+  }
+  handleSetLoopRange(start, end, autoSeek = true) {
+    const embedded = this.embeddedManager.getActiveEmbeddedWidget();
+    if (embedded) {
+      embedded.uncollapse();
+      embedded.setLoopRange(start, end, autoSeek);
+      return true;
+    }
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+    if (activeView && activeView.file) {
+      void this.detector.extractMediaFromNote(
+        activeView.file,
+        this.settings.mediaPropertyNames,
+        this.settings.playlistNoteProperty,
+        this.settings.verifyMediaContentType ?? true
+      ).then((source) => {
+        if (source) {
+          this.embeddedManager.reopenView(activeView, start).then(() => {
+            const newEmbedded = this.embeddedManager.getActiveEmbeddedWidget();
+            newEmbedded?.setLoopRange(start, end, autoSeek);
+          });
+        }
+      });
+      return true;
+    }
+    return false;
+  }
+  setupOpenLinkTextGuard() {
+    const origOpenLinkText = this.app.workspace.openLinkText.bind(this.app.workspace);
+    this.app.workspace.openLinkText = async (linktext, sourcePath, newLeaf, openViewState) => {
+      const trimmed = (linktext || "").trim();
+      if (trimmed === "" || trimmed === "()" || trimmed === "( )" || trimmed === "#" || trimmed.startsWith("(") && trimmed.endsWith(")")) {
+        const activeView = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+        if (activeView && activeView.editor) {
+          const cursor = activeView.editor.getCursor();
+          const line = activeView.editor.getLine(cursor.line) || "";
+          const timestamps = extractTimestampsFromText(line);
+          if (timestamps.length > 0) {
+            let best = timestamps[0];
+            let bestDist = 999999;
+            for (const ts of timestamps) {
+              const dist = Math.abs(cursor.ch - (ts.index + ts.length / 2));
+              if (dist < bestDist) {
+                bestDist = dist;
+                best = ts;
+              }
+            }
+            if (best.isRange && best.endSeconds !== void 0) {
+              this.handleSetLoopRange(best.timeSeconds, best.endSeconds, true);
+            } else {
+              this.handleTimestampJump(best.displayText);
+            }
+          }
+        }
+        return;
+      }
+      const range = parseTimestampRange(trimmed);
+      if (range) {
+        this.handleSetLoopRange(range.start, range.end, true);
+        return;
+      }
+      const sec = parseTimestamp(trimmed);
+      if (sec !== null) {
+        this.handleTimestampJump(trimmed);
+        return;
+      }
+      return origOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+    };
+    this.register(() => {
+      this.app.workspace.openLinkText = origOpenLinkText;
+    });
   }
   registerTimestampClickHandler() {
-    this.registerDomEvent(document, "click", (evt) => {
+    let lastActionTime = 0;
+    const triggerAction = (action) => {
+      const now = Date.now();
+      if (now - lastActionTime > 300) {
+        lastActionTime = now;
+        action();
+      }
+    };
+    const handlePointer = (evt) => {
       const target = evt.target;
       if (!target) return;
       if (target.closest(
@@ -5439,61 +5808,87 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       )) {
         return;
       }
-      if (target.classList.contains("mediascribe-timestamp-link")) {
+      const mediaPill = target.closest(".mediascribe-timestamp-link");
+      if (mediaPill) {
         evt.preventDefault();
         evt.stopPropagation();
-        const text = target.getAttribute("data-timestamp") || target.innerText;
-        this.handleTimestampJump(text);
+        evt.stopImmediatePropagation();
+        const loopRange = mediaPill.getAttribute("data-loop-range");
+        if (loopRange) {
+          const parts = loopRange.split("-");
+          if (parts.length === 2) {
+            triggerAction(() => {
+              this.handleSetLoopRange(parseFloat(parts[0]), parseFloat(parts[1]), true);
+            });
+            return;
+          }
+        }
+        const text = mediaPill.getAttribute("data-timestamp") || mediaPill.innerText;
+        const range = parseTimestampRange(text);
+        if (range) {
+          triggerAction(() => {
+            this.handleSetLoopRange(range.start, range.end, true);
+          });
+          return;
+        }
+        triggerAction(() => {
+          this.handleTimestampJump(text);
+        });
         return;
       }
       const anchor = target.closest("a");
       if (anchor) {
+        if (!isOfficialTimestampLink(anchor)) {
+          return;
+        }
         const href = anchor.getAttribute("href") || "";
         const text = anchor.innerText.trim();
+        const range = parseTimestampRange(text) || parseTimestampRange(href);
+        if (range) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          evt.stopImmediatePropagation();
+          triggerAction(() => {
+            this.handleSetLoopRange(range.start, range.end, true);
+          });
+          return;
+        }
         if (href.startsWith("#t=") || parseTimestamp(href) !== null || parseTimestamp(text) !== null) {
           evt.preventDefault();
           evt.stopPropagation();
-          this.handleTimestampJump(href || text);
+          evt.stopImmediatePropagation();
+          triggerAction(() => {
+            this.handleTimestampJump(href || text);
+          });
           return;
         }
       }
       const linkEl = target.closest(".cm-link, .cm-url, .cm-hmd-internal-link, .cm-formatting-link");
-      if (linkEl) {
-        const text = linkEl.textContent?.trim() || "";
-        const sec = parseTimestamp(text);
-        if (sec !== null) {
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.handleTimestampJump(text);
-          return;
-        }
-        const cmLine2 = target.closest(".cm-line");
-        if (cmLine2) {
-          const lineText = cmLine2.textContent || "";
-          const timestamps = extractTimestampsFromText(lineText);
-          const match = timestamps.find((ts) => ts.displayText === text || text.includes(ts.displayText));
-          if (match) {
-            evt.preventDefault();
-            evt.stopPropagation();
-            this.handleTimestampJump(match.displayText);
-            return;
-          }
-        }
-      }
       const cmLine = target.closest(".cm-line");
-      if (cmLine) {
-        const directText = target.textContent?.trim() || "";
-        if (/^(?:\[|\()?(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\))?$/.test(directText)) {
-          const sec = parseTimestamp(directText);
-          if (sec !== null) {
+      if (linkEl && cmLine) {
+        const lineText = cmLine.textContent || "";
+        const timestamps = extractTimestampsFromText(lineText);
+        if (timestamps.length > 0) {
+          const result = getTimestampFromLinkElement(linkEl, cmLine);
+          if (result) {
             evt.preventDefault();
             evt.stopPropagation();
-            this.handleTimestampJump(directText);
+            evt.stopImmediatePropagation();
+            triggerAction(() => {
+              if (result.type === "range") {
+                this.handleSetLoopRange(result.start, result.end, true);
+              } else {
+                this.handleTimestampJump(result.text);
+              }
+            });
             return;
           }
         }
       }
-    }, true);
+    };
+    this.registerDomEvent(document, "mousedown", handlePointer, true);
+    this.registerDomEvent(document, "click", handlePointer, true);
+    this.registerDomEvent(document, "auxclick", handlePointer, true);
   }
   handleTimestampJump(text) {
     const seconds = parseTimestamp(text);
@@ -5528,19 +5923,50 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
   }
   setupMarkdownPostProcessor() {
     this.registerMarkdownPostProcessor((el) => {
+      const anchorTags = el.querySelectorAll("a");
+      anchorTags.forEach((a) => {
+        if (a.classList.contains("mediascribe-timestamp-link")) return;
+        if (!isOfficialTimestampLink(a)) return;
+        const text = a.textContent?.trim() || "";
+        const href = a.getAttribute("href") || "";
+        const range = parseTimestampRange(text) || parseTimestampRange(href);
+        if (range) {
+          a.classList.add("mediascribe-timestamp-link", "mediascribe-loop-range-link");
+          a.setAttribute("data-loop-range", `${range.start}-${range.end}`);
+          a.setAttribute("data-loop-start", `${range.start}`);
+          a.setAttribute("data-loop-end", `${range.end}`);
+          a.title = `Click to set A-B Loop: ${formatSeconds(range.start)} - ${formatSeconds(range.end)}`;
+          a.empty();
+          const iconSpan = a.createSpan({ cls: "mediascribe-pill-icon" });
+          (0, import_obsidian16.setIcon)(iconSpan, "repeat");
+          a.createSpan({ cls: "mediascribe-pill-text", text: `${formatSeconds(range.start)} - ${formatSeconds(range.end)}` });
+          return;
+        }
+        const sec = parseTimestamp(text) ?? parseTimestamp(href);
+        if (sec !== null) {
+          a.classList.add("mediascribe-timestamp-link");
+          a.setAttribute("data-timestamp", formatSeconds(sec));
+          a.title = `Click to jump to ${formatSeconds(sec)}`;
+          a.empty();
+          const iconSpan = a.createSpan({ cls: "mediascribe-pill-icon" });
+          (0, import_obsidian16.setIcon)(iconSpan, "play");
+          a.createSpan({ cls: "mediascribe-pill-text", text: `${formatSeconds(sec)}` });
+        }
+      });
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
       const nodesToReplace = [];
       let currentNode = null;
       while (currentNode = walker.nextNode()) {
-        if (/\[\d{1,2}:\d{2}(?::\d{2})?\]/.test(currentNode.nodeValue || "")) {
-          if (currentNode.parentElement && !currentNode.parentElement.closest(".mediascribe-timestamp-link, code, pre")) {
+        const val = currentNode.nodeValue || "";
+        if (/\[\d{1,2}:\d{2}(?::\d{2})?\s*(?:[-–—~]|\bto\b)\s*\d{1,2}:\d{2}(?::\d{2})?\]\([^)]*\)/.test(val) || /\[\d{1,2}:\d{2}(?::\d{2})?\]\([^)]*\)/.test(val)) {
+          if (currentNode.parentElement && !currentNode.parentElement.closest(".mediascribe-timestamp-link, a, code, pre")) {
             nodesToReplace.push({ node: currentNode, parent: currentNode.parentNode });
           }
         }
       }
       for (const item of nodesToReplace) {
         const val = item.node.nodeValue || "";
-        const regex = /\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g;
+        const regex = /(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\]\([^)]*\)|\[(\d{1,2}:\d{2}(?::\d{2})?)\]\([^)]*\))/g;
         let lastIdx = 0;
         let match;
         const frag = document.createDocumentFragment();
@@ -5548,11 +5974,43 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
           if (match.index > lastIdx) {
             frag.appendChild(document.createTextNode(val.substring(lastIdx, match.index)));
           }
-          const pill = document.createElement("span");
-          pill.className = "mediascribe-timestamp-link";
-          pill.setAttribute("data-timestamp", match[1]);
-          pill.innerText = `\u23F1\uFE0F ${match[1]}`;
-          frag.appendChild(pill);
+          if (match[1] && match[2]) {
+            const startSec = parseTimestamp(match[1]);
+            const endSec = parseTimestamp(match[2]);
+            const pill = document.createElement("span");
+            pill.className = "mediascribe-timestamp-link mediascribe-loop-range-link";
+            if (startSec !== null && endSec !== null) {
+              const minSec = Math.min(startSec, endSec);
+              const maxSec = Math.max(startSec, endSec);
+              pill.setAttribute("data-loop-range", `${minSec}-${maxSec}`);
+              pill.setAttribute("data-loop-start", `${minSec}`);
+              pill.setAttribute("data-loop-end", `${maxSec}`);
+            }
+            pill.title = `Click to set A-B Loop: ${match[1]} - ${match[2]}`;
+            const iconSpan = document.createElement("span");
+            iconSpan.className = "mediascribe-pill-icon";
+            (0, import_obsidian16.setIcon)(iconSpan, "repeat");
+            pill.appendChild(iconSpan);
+            const textSpan = document.createElement("span");
+            textSpan.className = "mediascribe-pill-text";
+            textSpan.textContent = `${match[1]} - ${match[2]}`;
+            pill.appendChild(textSpan);
+            frag.appendChild(pill);
+          } else if (match[3]) {
+            const pill = document.createElement("span");
+            pill.className = "mediascribe-timestamp-link";
+            pill.setAttribute("data-timestamp", match[3]);
+            pill.title = `Click to jump to ${match[3]}`;
+            const iconSpan = document.createElement("span");
+            iconSpan.className = "mediascribe-pill-icon";
+            (0, import_obsidian16.setIcon)(iconSpan, "play");
+            pill.appendChild(iconSpan);
+            const textSpan = document.createElement("span");
+            textSpan.className = "mediascribe-pill-text";
+            textSpan.textContent = `${match[3]}`;
+            pill.appendChild(textSpan);
+            frag.appendChild(pill);
+          }
           lastIdx = regex.lastIndex;
         }
         if (lastIdx < val.length) {

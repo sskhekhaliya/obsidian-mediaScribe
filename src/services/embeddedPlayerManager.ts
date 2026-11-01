@@ -88,6 +88,16 @@ export class EmbeddedPlayerManager {
     return this.getActiveEmbeddedWidget()?.getCurrentSource() || null;
   }
 
+  public setLoopRange(start: number, end: number, autoSeek: boolean = true): boolean {
+    const widget = this.getActiveEmbeddedWidget();
+    if (widget) {
+      widget.uncollapse();
+      widget.setLoopRange(start, end, autoSeek);
+      return true;
+    }
+    return false;
+  }
+
   /**
    * Inspects a MarkdownView and mounts or dismounts the embedded player
    */

@@ -6,15 +6,18 @@ export class TimelineMarkers {
   private containerEl: HTMLElement;
   private app: App;
   private playerGetter: () => IMediaPlayer | null;
+  private onRangeClick?: (start: number, end: number) => void;
   private duration: number = 0;
 
   constructor(
     parentEl: HTMLElement,
     app: App,
-    playerGetter: () => IMediaPlayer | null
+    playerGetter: () => IMediaPlayer | null,
+    onRangeClick?: (start: number, end: number) => void
   ) {
     this.app = app;
     this.playerGetter = playerGetter;
+    this.onRangeClick = onRangeClick;
     this.containerEl = parentEl.createDiv({ cls: "mediascribe-timeline-markers" });
   }
 
@@ -38,18 +41,24 @@ export class TimelineMarkers {
 
       const percent = (ts.timeSeconds / this.duration) * 100;
       const marker = this.containerEl.createDiv({
-        cls: "mediascribe-marker-pin",
+        cls: ts.isRange ? "mediascribe-marker-pin mediascribe-marker-pin-range" : "mediascribe-marker-pin",
         attr: {
           style: `left: ${percent}%;`
         }
       });
 
       // Tooltip preview
-      const previewText = ts.lineContent ? `[${formatSeconds(ts.timeSeconds)}] ${ts.lineContent}` : formatSeconds(ts.timeSeconds);
+      const previewText = ts.isRange && ts.endSeconds !== undefined
+        ? `[${ts.displayText}] Repeat Loop: ${ts.lineContent || ""}`
+        : ts.lineContent ? `[${formatSeconds(ts.timeSeconds)}] ${ts.lineContent}` : formatSeconds(ts.timeSeconds);
       marker.setAttribute("aria-label", previewText);
 
       marker.addEventListener("click", (e) => {
         e.stopPropagation();
+        if (ts.isRange && ts.endSeconds !== undefined && this.onRangeClick) {
+          this.onRangeClick(ts.timeSeconds, ts.endSeconds);
+          return;
+        }
         const player = this.playerGetter();
         if (player) {
           player.seekTo(ts.timeSeconds);

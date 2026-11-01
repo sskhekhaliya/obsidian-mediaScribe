@@ -919,6 +919,36 @@
   color: var(--text-muted);
 }
 
+.mediascribe-loop-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+}
+
+.mediascribe-loop-input {
+  width: 130px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 2px 6px;
+  font-size: 11px;
+  font-family: var(--font-monospace);
+  color: var(--text-normal);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mediascribe-loop-input:focus {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.mediascribe-loop-input::placeholder {
+  color: var(--text-faint);
+  font-family: var(--font-monospace);
+}
+
 /* ==========================================================================
    Clickable Timestamp Pills in Notes (Reading View & Live Preview)
    ========================================================================== */
@@ -940,12 +970,42 @@
   transition: all 0.15s ease;
 }
 
+.mediascribe-loop-range-link {
+  background: rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.16);
+  border: 1px dashed rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.45);
+}
+
+.mediascribe-marker-pin.mediascribe-marker-pin-range {
+  background: var(--interactive-accent);
+  border-radius: 2px;
+  transform: translateX(-50%) scale(1.15);
+}
+
 .mediascribe-timestamp-link:hover {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
   box-shadow: 0 0 6px rgba(var(--interactive-accent-rgb, 108, 49, 227), 0.35);
   transform: translateY(-1px);
+}
+
+.mediascribe-pill-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 3px;
+  line-height: 1;
+}
+
+.mediascribe-pill-icon svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.2px;
+}
+
+.mediascribe-pill-text {
+  display: inline-block;
+  line-height: 1.2;
 }
 
 /* ==========================================================================

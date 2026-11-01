@@ -209,7 +209,7 @@ export class TranscriptPanel {
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView && activeView.editor) {
       const timeStr = formatSeconds(item.start);
-      const quoteMarkdown = `> [${timeStr}] ${item.text}\n\n`;
+      const quoteMarkdown = `> [${timeStr}]() ${item.text}\n\n`;
       activeView.editor.replaceSelection(quoteMarkdown);
     }
   }
@@ -218,9 +218,9 @@ export class TranscriptPanel {
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!activeView || !activeView.editor) return;
 
-    let transcriptMarkdown = `\n### 📜 Video Transcript\n\n`;
+    let transcriptMarkdown = `\n### Video Transcript\n\n`;
     for (const item of this.items) {
-      transcriptMarkdown += `- **[${formatSeconds(item.start)}]** ${item.text}\n`;
+      transcriptMarkdown += `- [${formatSeconds(item.start)}]() ${item.text}\n`;
     }
     transcriptMarkdown += `\n`;
 

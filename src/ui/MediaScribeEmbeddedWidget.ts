@@ -9,7 +9,7 @@ import { TranscriptService } from "../services/transcriptService";
 import { AmbientGlowService } from "../services/ambientGlowService";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { TimelineMarkers } from "./TimelineMarkers";
-import { formatSeconds, parseTimestamp } from "../utils/time";
+import { formatSeconds, parseTimestamp, parseTimestampRange } from "../utils/time";
 import { fetchYouTubeTitle, fetchYouTubeVideoMetadata, fetchYouTubePlaylistItems, getCachedYouTubeTitle } from "../utils/youtube";
 import { setDynamicTooltip } from "../utils/hotkey";
 
@@ -59,6 +59,10 @@ export class MediaScribeEmbeddedWidget {
   private loopA: number | null = null;
   private loopB: number | null = null;
   private isLooping: boolean = false;
+  private loopSpanA: HTMLElement | null = null;
+  private loopSpanB: HTMLElement | null = null;
+  private loopInputEl: HTMLInputElement | null = null;
+  private loopToggleBtn: HTMLButtonElement | null = null;
   private isSidePanelOpen: boolean = false;
   private activeSideTab: "playlist" | "transcript" | "description" = "playlist";
   private isCollapsed: boolean = false;
@@ -864,7 +868,12 @@ export class MediaScribeEmbeddedWidget {
       }
     });
 
-    this.timelineMarkers = new TimelineMarkers(scrubberContainer, this.app, () => this.player);
+    this.timelineMarkers = new TimelineMarkers(
+      scrubberContainer,
+      this.app,
+      () => this.player,
+      (start, end) => this.setLoopRange(start, end, true)
+    );
 
     // Row 2: Buttons Row (Play Menu on Left, Other Menu on Right)
     const buttonsRow = this.controlsEl.createDiv({ cls: "mediascribe-buttons-row" });
@@ -1049,15 +1058,13 @@ export class MediaScribeEmbeddedWidget {
     });
 
     // A-B Loop Toggle
-    const loopBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn",
+    this.loopToggleBtn = rightControls.createEl("button", {
+      cls: `mediascribe-ctrl-btn ${this.isLooping ? "is-active" : ""}`,
       attr: { title: "A-B Repeat Loop" }
     });
-    setIcon(loopBtn, "repeat");
-    loopBtn.addEventListener("click", () => {
-      this.isLooping = !this.isLooping;
-      loopBtn.toggleClass("is-active", this.isLooping);
-      this.loopBarEl?.toggleClass("is-hidden", !this.isLooping);
+    setIcon(this.loopToggleBtn, "repeat");
+    this.loopToggleBtn.addEventListener("click", () => {
+      this.toggleLoop();
     });
 
     // Fullscreen Toggle
@@ -1756,6 +1763,66 @@ export class MediaScribeEmbeddedWidget {
     }
   }
 
+  public toggleLoop(): void {
+    this.isLooping = !this.isLooping;
+    this.loopToggleBtn?.toggleClass("is-active", this.isLooping);
+    this.loopBarEl?.toggleClass("is-hidden", !this.isLooping);
+  }
+
+  public setLoopRange(start: number, end: number, autoSeek: boolean = true): void {
+    if (isNaN(start) || isNaN(end)) return;
+    let min = Math.min(start, end);
+    let max = Math.max(start, end);
+    if (min === max) {
+      max = min + 1;
+    }
+
+    this.loopA = min;
+    this.loopB = max;
+    this.isLooping = true;
+
+    if (this.loopSpanA) {
+      this.loopSpanA.setText(formatSeconds(this.loopA));
+    }
+    if (this.loopSpanB) {
+      this.loopSpanB.setText(formatSeconds(this.loopB));
+    }
+    if (this.loopInputEl) {
+      this.loopInputEl.value = `[${formatSeconds(this.loopA)} - ${formatSeconds(this.loopB)}]`;
+    }
+    if (this.loopToggleBtn) {
+      this.loopToggleBtn.addClass("is-active");
+    }
+    if (this.loopBarEl) {
+      this.loopBarEl.removeClass("is-hidden");
+    }
+
+    if (autoSeek && this.player) {
+      this.player.seekTo(this.loopA);
+      void this.player.play();
+      this.updatePlayState(true);
+    }
+
+    new Notice(`MediaScribe: Loop set [${formatSeconds(this.loopA)} - ${formatSeconds(this.loopB)}]`);
+  }
+
+  public clearLoop(): void {
+    this.loopA = null;
+    this.loopB = null;
+    this.isLooping = false;
+    if (this.loopSpanA) this.loopSpanA.setText("--:--");
+    if (this.loopSpanB) this.loopSpanB.setText("--:--");
+    if (this.loopInputEl) this.loopInputEl.value = "";
+    if (this.loopToggleBtn) this.loopToggleBtn.removeClass("is-active");
+    new Notice("MediaScribe: A-B loop cleared.");
+  }
+
+  private updateLoopInputValue(): void {
+    if (this.loopA !== null && this.loopB !== null && this.loopInputEl) {
+      this.loopInputEl.value = `[${formatSeconds(this.loopA)} - ${formatSeconds(this.loopB)}]`;
+    }
+  }
+
   private buildLoopBar(parentEl: HTMLElement): void {
     this.loopBarEl = parentEl.createDiv({ cls: "mediascribe-loop-bar is-hidden" });
 
@@ -1763,34 +1830,83 @@ export class MediaScribeEmbeddedWidget {
     title.setText("A-B Loop:");
 
     const btnA = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Set A" });
-    const spanA = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
+    this.loopSpanA = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
 
     btnA.addEventListener("click", async () => {
       if (this.player) {
         this.loopA = await this.player.getCurrentTime();
-        spanA.setText(formatSeconds(this.loopA));
+        this.loopSpanA?.setText(formatSeconds(this.loopA));
+        if (this.loopA !== null && this.loopB !== null && this.loopA > this.loopB) {
+          const temp = this.loopA;
+          this.loopA = this.loopB;
+          this.loopB = temp;
+          this.loopSpanA?.setText(formatSeconds(this.loopA));
+          this.loopSpanB?.setText(formatSeconds(this.loopB));
+        }
+        this.updateLoopInputValue();
         new Notice(`MediaScribe: Point A set to ${formatSeconds(this.loopA)}`);
       }
     });
 
     const btnB = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Set B" });
-    const spanB = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
+    this.loopSpanB = this.loopBarEl.createSpan({ cls: "mediascribe-loop-val", text: "--:--" });
 
     btnB.addEventListener("click", async () => {
       if (this.player) {
         this.loopB = await this.player.getCurrentTime();
-        spanB.setText(formatSeconds(this.loopB));
+        this.loopSpanB?.setText(formatSeconds(this.loopB));
+        if (this.loopA !== null && this.loopB !== null && this.loopA > this.loopB) {
+          const temp = this.loopA;
+          this.loopA = this.loopB;
+          this.loopB = temp;
+          this.loopSpanA?.setText(formatSeconds(this.loopA));
+          this.loopSpanB?.setText(formatSeconds(this.loopB));
+        }
+        this.updateLoopInputValue();
         new Notice(`MediaScribe: Point B set to ${formatSeconds(this.loopB)}`);
       }
     });
 
+    // Direct [starttime - endtime] input
+    const inputWrapper = this.loopBarEl.createDiv({ cls: "mediascribe-loop-input-wrapper" });
+    this.loopInputEl = inputWrapper.createEl("input", {
+      cls: "mediascribe-loop-input",
+      type: "text",
+      attr: {
+        placeholder: "[00:15 - 00:45]",
+        title: "Enter [starttime - endtime] and press Enter to set loop"
+      }
+    });
+
+    const applyRange = () => {
+      if (!this.loopInputEl) return;
+      const text = this.loopInputEl.value.trim();
+      if (!text) return;
+      const range = parseTimestampRange(text, true);
+      if (range) {
+        this.setLoopRange(range.start, range.end, true);
+      } else {
+        new Notice("MediaScribe: Invalid format. Use [starttime - endtime] (e.g. [01:23 - 02:45])");
+      }
+    };
+
+    this.loopInputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyRange();
+      }
+    });
+
+    const setBtn = inputWrapper.createEl("button", {
+      cls: "mediascribe-btn-sm",
+      text: "Set",
+      attr: { title: "Apply loop range" }
+    });
+    setBtn.addEventListener("click", () => applyRange());
+
     const clearBtn = this.loopBarEl.createEl("button", { cls: "mediascribe-btn-sm", text: "Clear" });
     clearBtn.addEventListener("click", () => {
-      this.loopA = null;
-      this.loopB = null;
-      spanA.setText("--:--");
-      spanB.setText("--:--");
-      new Notice("MediaScribe: A-B loop cleared.");
+      this.clearLoop();
     });
   }
 

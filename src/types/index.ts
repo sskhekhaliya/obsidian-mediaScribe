@@ -41,12 +41,10 @@ export interface NoteTimestampMarker {
 }
 
 export type TimestampFormat = 
-  | "bracket"       // [01:23]
+  | "bracket"       // [01:23]() - Clean Stamp
   | "full_url_link" // [01:23](https://youtu.be/...#t=83)
   | "markdown_link" // [01:23](#t=83)
-  | "wikilink"      // [[#t=83|01:23]]
-  | "bold"          // **01:23**
-  | "plain";        // 01:23
+  | "wikilink";     // [[#t=83|01:23]]
 
 export type PlayerLayoutMode = "embed_in_note" | "right_sidebar" | "split_horizontal" | "split_vertical";
 export type EmbeddedPosition = "top" | "vertical_right" | "vertical_left";

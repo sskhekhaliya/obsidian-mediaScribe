@@ -202,11 +202,15 @@ export class MediaScribeSettingTab extends PluginSettingTab {
         drop
           .addOption("full_url_link", "[01:23](https://youtu.be/...?t=83) (Direct Video Link - Portable)")
           .addOption("markdown_link", "[01:23](#t=83) (Internal Anchor Link)")
-          .addOption("bracket", "[01:23] (Clean Bracket)")
-          .addOption("wikilink", "[[#t=83|01:23]] (Obsidian Wikilink)")
-          .addOption("bold", "**01:23** (Bold text)")
-          .addOption("plain", "01:23 (Plain text)")
-          .setValue(this.plugin.settings.timestampFormat)
+          .addOption("bracket", "[01:23]() (Clean Stamp)")
+          .addOption("wikilink", "[[#t=83|01:23]] (Obsidian Wikilink)");
+
+        const current = ((this.plugin.settings.timestampFormat as string) === "bold" || (this.plugin.settings.timestampFormat as string) === "plain")
+          ? "bracket"
+          : this.plugin.settings.timestampFormat;
+
+        drop
+          .setValue(current)
           .onChange(async (val) => {
             this.plugin.settings.timestampFormat = val as TimestampFormat;
             await this.plugin.saveSettings();
@@ -492,6 +496,6 @@ export class MediaScribeSettingTab extends PluginSettingTab {
 
     const creditsText = supportCard.createEl("div");
     creditsText.style.cssText = "margin-top: 10px; font-size: 11px; color: var(--text-muted);";
-    creditsText.setText("Created with ❤️ by SSKhekhaliya");
+    creditsText.setText("Created by SSKhekhaliya");
   }
 }

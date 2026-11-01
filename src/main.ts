@@ -1,4 +1,4 @@
-import { MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { DEFAULT_SETTINGS, IMediaPlayer, MediaScribeSettings, MediaSourceInfo } from "./types";
 import { MediaScribeSettingTab } from "./settings";
 import { MediaDetector } from "./services/mediaDetector";
@@ -7,8 +7,75 @@ import { TimestampService } from "./services/timestampService";
 import { TypingScribeService } from "./services/typingScribeService";
 import { TranscriptService } from "./services/transcriptService";
 import { EmbeddedPlayerManager } from "./services/embeddedPlayerManager";
-import { extractTimestampsFromText, formatSeconds, parseTimestamp } from "./utils/time";
+import { extractTimestampsFromText, formatSeconds, parseTimestamp, parseTimestampRange } from "./utils/time";
 import { setDynamicTooltip } from "./utils/hotkey";
+
+function isOfficialTimestampLink(a: HTMLAnchorElement): boolean {
+  const href = a.getAttribute("href") || "";
+  const dataHref = a.getAttribute("data-href") || "";
+  const text = a.textContent?.trim() || "";
+
+  // If href is explicitly empty "" or "#" or "()", it's [text]()
+  if (href === "" || href === "#" || href === "()" || href.endsWith("#")) return true;
+
+  // If href or dataHref contains explicit #t= or is an external URL, it's [text](url) or [[#t=...|text]]
+  if (href.startsWith("#t=") || dataHref.startsWith("#t=") || href.startsWith("http://") || href.startsWith("https://")) return true;
+
+  // If href is non-empty and DIFFERENT from text (e.g. [5:30](utr)), it's [text](url)
+  if (href && href !== text && decodeURI(href) !== text && !a.classList.contains("is-unresolved")) return true;
+
+  // Otherwise, if href === text (or dataHref === text, or class is-unresolved), it was written as bare [text]
+  return false;
+}
+
+function getTimestampFromLinkElement(linkEl: Element, cmLine: Element): { type: "range"; start: number; end: number } | { type: "single"; text: string } | null {
+  const text = linkEl.textContent?.trim() || "";
+
+  // 1. Direct match on linkEl text
+  const directRange = parseTimestampRange(text);
+  if (directRange) return { type: "range", start: directRange.start, end: directRange.end };
+  const directSec = parseTimestamp(text);
+  if (directSec !== null) return { type: "single", text };
+
+  // 2. Check previous siblings (e.g. clicked on ")", "(", "()", or ".cm-url")
+  let prev = linkEl.previousElementSibling;
+  let steps = 0;
+  while (prev && steps < 5) {
+    const pText = prev.textContent?.trim() || "";
+    const pRange = parseTimestampRange(pText);
+    if (pRange) return { type: "range", start: pRange.start, end: pRange.end };
+    const pSec = parseTimestamp(pText);
+    if (pSec !== null) return { type: "single", text: pText };
+    prev = prev.previousElementSibling;
+    steps++;
+  }
+
+  // 3. Check next siblings (e.g. clicked on "[" before timestamp)
+  let next = linkEl.nextElementSibling;
+  steps = 0;
+  while (next && steps < 5) {
+    const nText = next.textContent?.trim() || "";
+    const nRange = parseTimestampRange(nText);
+    if (nRange) return { type: "range", start: nRange.start, end: nRange.end };
+    const nSec = parseTimestamp(nText);
+    if (nSec !== null) return { type: "single", text: nText };
+    next = next.nextElementSibling;
+    steps++;
+  }
+
+  // 4. Fallback for line with timestamps when clicking empty link token
+  const lineText = cmLine.textContent || "";
+  const timestamps = extractTimestampsFromText(lineText);
+  if (timestamps.length === 1 && (text === "" || text === "()" || text === "(" || text === ")" || linkEl.classList.contains("cm-url") || linkEl.classList.contains("cm-formatting-link"))) {
+    const ts = timestamps[0];
+    if (ts.isRange && ts.endSeconds !== undefined) {
+      return { type: "range", start: ts.timeSeconds, end: ts.endSeconds };
+    }
+    return { type: "single", text: ts.displayText };
+  }
+
+  return null;
+}
 
 export default class MediaScribePlugin extends Plugin {
   public settings: MediaScribeSettings = DEFAULT_SETTINGS;
@@ -33,7 +100,8 @@ export default class MediaScribePlugin extends Plugin {
       this.app,
       this.settings,
       () => this.getActivePlayer(),
-      () => this.embeddedManager?.getActiveSource() || null
+      () => this.embeddedManager?.getActiveSource() || null,
+      (start, end) => this.handleSetLoopRange(start, end, true)
     );
 
     this.embeddedManager = new EmbeddedPlayerManager(
@@ -74,13 +142,17 @@ export default class MediaScribePlugin extends Plugin {
     // Register Global Click Handler for Timestamps
     this.registerTimestampClickHandler();
 
+    // Guard openLinkText to prevent creating/opening files named "()" from empty markdown links
+    this.setupOpenLinkTextGuard();
+
     // Register Markdown Post-Processor to style timestamps
     this.setupMarkdownPostProcessor();
 
-    // Register Typing Scribe Auto-Pause
+    // Register Typing Scribe Auto-Pause & Auto A-B Loop detection
     this.registerEvent(
-      this.app.workspace.on("editor-change", () => {
+      this.app.workspace.on("editor-change", (editor: any) => {
         this.typingScribeService.handleEditorChange();
+        this.handleEditorLoopRangeDetection(editor);
       })
     );
 
@@ -372,10 +444,191 @@ export default class MediaScribePlugin extends Plugin {
         this.typingScribeService.toggle();
       }
     });
+
+    // 11. Set A-B Loop from Range
+    this.addCommand({
+      id: "mediascribe-set-loop-range",
+      name: "Set A-B Loop range [starttime - endtime]...",
+      callback: () => {
+        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        let defaultVal = "";
+        if (activeView && activeView.editor) {
+          const selection = activeView.editor.getSelection().trim();
+          if (selection && (parseTimestampRange(selection) || parseTimestamp(selection))) {
+            defaultVal = selection;
+          }
+        }
+        const input = window.prompt("Enter loop range [starttime - endtime] (e.g. [01:23 - 02:45]):", defaultVal);
+        if (input && input.trim()) {
+          const range = parseTimestampRange(input.trim(), true);
+          if (range) {
+            this.handleSetLoopRange(range.start, range.end, true);
+          } else {
+            new Notice("MediaScribe: Invalid format. Please use [starttime - endtime] (e.g. 01:23 - 02:45)");
+          }
+        }
+      }
+    });
+  }
+
+  private lastDetectedRangeKey: string = "";
+
+  private handleEditorLoopRangeDetection(editor: any): void {
+    if (!editor || typeof editor.getCursor !== "function") return;
+
+    try {
+      const cursor = editor.getCursor();
+      const currentLine = editor.getLine(cursor.line) || "";
+      const textBefore = currentLine.substring(0, cursor.ch);
+
+      // 1. Detect if user just typed closing parenthesis of a link: e.g. "... [01:23 - 02:45]()" or "... [01:23 - 02:45](...)"
+      const linkMatch = textBefore.match(
+        /(?:\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\([^)]*\)|\[\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\])$/i
+      );
+
+      let matchedStart: string | null = null;
+      let matchedEnd: string | null = null;
+      let rangeKey = "";
+
+      if (linkMatch) {
+        matchedStart = linkMatch[1] || linkMatch[3];
+        matchedEnd = linkMatch[2] || linkMatch[4];
+        rangeKey = `link:${cursor.line}:${matchedStart}-${matchedEnd}`;
+      } else if (cursor.line > 0 && cursor.ch === 0) {
+        // 2. User just pressed Enter after typing on previous line:
+        const prevLine = editor.getLine(cursor.line - 1) || "";
+        const prevMatch = prevLine.match(
+          /(?:\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\([^)]*\)|\[\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\])/i
+        );
+        if (prevMatch) {
+          matchedStart = prevMatch[1] || prevMatch[3];
+          matchedEnd = prevMatch[2] || prevMatch[4];
+          rangeKey = `enter:${cursor.line - 1}:${matchedStart}-${matchedEnd}`;
+        }
+      }
+
+      if (matchedStart && matchedEnd && rangeKey && rangeKey !== this.lastDetectedRangeKey) {
+        const startSec = parseTimestamp(matchedStart);
+        const endSec = parseTimestamp(matchedEnd);
+        if (startSec !== null && endSec !== null) {
+          this.lastDetectedRangeKey = rangeKey;
+          // Set the loop Set A and Set B on the active player widget automatically
+          this.handleSetLoopRange(startSec, endSec, false);
+        }
+      }
+    } catch {
+      // Ignore editor read errors gracefully
+    }
+  }
+
+  public handleSetLoopRange(start: number, end: number, autoSeek: boolean = true): boolean {
+    const embedded = this.embeddedManager.getActiveEmbeddedWidget();
+    if (embedded) {
+      embedded.uncollapse();
+      embedded.setLoopRange(start, end, autoSeek);
+      return true;
+    }
+
+    // If player was closed, reopen it for the active note!
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (activeView && activeView.file) {
+      void this.detector
+        .extractMediaFromNote(
+          activeView.file,
+          this.settings.mediaPropertyNames,
+          this.settings.playlistNoteProperty,
+          this.settings.verifyMediaContentType ?? true
+        )
+        .then((source) => {
+          if (source) {
+            this.embeddedManager.reopenView(activeView, start).then(() => {
+              const newEmbedded = this.embeddedManager.getActiveEmbeddedWidget();
+              newEmbedded?.setLoopRange(start, end, autoSeek);
+            });
+          }
+        });
+      return true;
+    }
+
+    return false;
+  }
+
+  private setupOpenLinkTextGuard(): void {
+    const origOpenLinkText = this.app.workspace.openLinkText.bind(this.app.workspace);
+    this.app.workspace.openLinkText = async (
+      linktext: string,
+      sourcePath: string,
+      newLeaf?: any,
+      openViewState?: any
+    ) => {
+      const trimmed = (linktext || "").trim();
+
+      // Intercept empty links, "()", "( )", "#", or parens so Obsidian NEVER creates a note named "()"
+      if (
+        trimmed === "" ||
+        trimmed === "()" ||
+        trimmed === "( )" ||
+        trimmed === "#" ||
+        (trimmed.startsWith("(") && trimmed.endsWith(")"))
+      ) {
+        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (activeView && activeView.editor) {
+          const cursor = activeView.editor.getCursor();
+          const line = activeView.editor.getLine(cursor.line) || "";
+          const timestamps = extractTimestampsFromText(line);
+          if (timestamps.length > 0) {
+            let best = timestamps[0];
+            let bestDist = 999999;
+            for (const ts of timestamps) {
+              const dist = Math.abs(cursor.ch - (ts.index + ts.length / 2));
+              if (dist < bestDist) {
+                bestDist = dist;
+                best = ts;
+              }
+            }
+            if (best.isRange && best.endSeconds !== undefined) {
+              this.handleSetLoopRange(best.timeSeconds, best.endSeconds, true);
+            } else {
+              this.handleTimestampJump(best.displayText);
+            }
+          }
+        }
+        return;
+      }
+
+      // Check if linktext itself is a loop range
+      const range = parseTimestampRange(trimmed);
+      if (range) {
+        this.handleSetLoopRange(range.start, range.end, true);
+        return;
+      }
+
+      // Check if linktext itself is a single timestamp
+      const sec = parseTimestamp(trimmed);
+      if (sec !== null) {
+        this.handleTimestampJump(trimmed);
+        return;
+      }
+
+      return origOpenLinkText(linktext, sourcePath, newLeaf, openViewState);
+    };
+
+    this.register(() => {
+      this.app.workspace.openLinkText = origOpenLinkText;
+    });
   }
 
   private registerTimestampClickHandler(): void {
-    this.registerDomEvent(document, "click", (evt: MouseEvent) => {
+    let lastActionTime = 0;
+    const triggerAction = (action: () => void) => {
+      const now = Date.now();
+      if (now - lastActionTime > 300) {
+        lastActionTime = now;
+        action();
+      }
+    };
+
+    const handlePointer = (evt: MouseEvent) => {
       const target = evt.target as HTMLElement;
       if (!target) return;
 
@@ -389,72 +642,99 @@ export default class MediaScribePlugin extends Plugin {
       }
 
       // 1. Custom MediaScribe timestamp link (e.g. from transcript panel or pill)
-      if (target.classList.contains("mediascribe-timestamp-link")) {
+      const mediaPill = target.closest(".mediascribe-timestamp-link") as HTMLElement;
+      if (mediaPill) {
         evt.preventDefault();
         evt.stopPropagation();
-        const text = target.getAttribute("data-timestamp") || target.innerText;
-        this.handleTimestampJump(text);
+        evt.stopImmediatePropagation();
+
+        const loopRange = mediaPill.getAttribute("data-loop-range");
+        if (loopRange) {
+          const parts = loopRange.split("-");
+          if (parts.length === 2) {
+            triggerAction(() => {
+              this.handleSetLoopRange(parseFloat(parts[0]), parseFloat(parts[1]), true);
+            });
+            return;
+          }
+        }
+
+        const text = mediaPill.getAttribute("data-timestamp") || mediaPill.innerText;
+        const range = parseTimestampRange(text);
+        if (range) {
+          triggerAction(() => {
+            this.handleSetLoopRange(range.start, range.end, true);
+          });
+          return;
+        }
+
+        triggerAction(() => {
+          this.handleTimestampJump(text);
+        });
         return;
       }
 
-      // 2. Reading View / Standard Anchor tag (e.g. <a href="#t=16">00:16</a>)
+      // 2. Reading View / Standard Anchor tag (e.g. <a href="">00:16</a> or <a href="#t=16">00:16</a>)
       const anchor = target.closest("a");
       if (anchor) {
+        if (!isOfficialTimestampLink(anchor)) {
+          return;
+        }
+
         const href = anchor.getAttribute("href") || "";
         const text = anchor.innerText.trim();
+
+        const range = parseTimestampRange(text) || parseTimestampRange(href);
+        if (range) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          evt.stopImmediatePropagation();
+          triggerAction(() => {
+            this.handleSetLoopRange(range.start, range.end, true);
+          });
+          return;
+        }
 
         if (href.startsWith("#t=") || parseTimestamp(href) !== null || parseTimestamp(text) !== null) {
           evt.preventDefault();
           evt.stopPropagation();
-          this.handleTimestampJump(href || text);
+          evt.stopImmediatePropagation();
+          triggerAction(() => {
+            this.handleTimestampJump(href || text);
+          });
           return;
         }
       }
 
       // 3. Live Preview / CodeMirror 6 Editor
-      // Check if user clicked on a link span (.cm-link, .cm-url, .cm-hmd-internal-link, .cm-formatting-link)
       const linkEl = target.closest(".cm-link, .cm-url, .cm-hmd-internal-link, .cm-formatting-link");
-      if (linkEl) {
-        const text = linkEl.textContent?.trim() || "";
-        const sec = parseTimestamp(text);
-        if (sec !== null) {
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.handleTimestampJump(text);
-          return;
-        }
-
-        // If clicked on bracket/parenthesis or (#t=...), inspect line context
-        const cmLine = target.closest(".cm-line");
-        if (cmLine) {
-          const lineText = cmLine.textContent || "";
-          const timestamps = extractTimestampsFromText(lineText);
-          const match = timestamps.find((ts) => ts.displayText === text || text.includes(ts.displayText));
-          if (match) {
-            evt.preventDefault();
-            evt.stopPropagation();
-            this.handleTimestampJump(match.displayText);
-            return;
-          }
-        }
-      }
-
-      // 4. Live Preview: Plain formatted timestamp text clicked within editor line
       const cmLine = target.closest(".cm-line");
-      if (cmLine) {
-        const directText = target.textContent?.trim() || "";
-        // Only trigger for explicitly formatted timestamps (e.g. [01:23] or 01:23:45)
-        if (/^(?:\[|\()?(\d{1,2}:\d{2}(?::\d{2})?)(?:\]|\))?$/.test(directText)) {
-          const sec = parseTimestamp(directText);
-          if (sec !== null) {
+      if (linkEl && cmLine) {
+        const lineText = cmLine.textContent || "";
+        const timestamps = extractTimestampsFromText(lineText);
+
+        if (timestamps.length > 0) {
+          const result = getTimestampFromLinkElement(linkEl, cmLine);
+          if (result) {
             evt.preventDefault();
             evt.stopPropagation();
-            this.handleTimestampJump(directText);
+            evt.stopImmediatePropagation();
+            triggerAction(() => {
+              if (result.type === "range") {
+                this.handleSetLoopRange(result.start, result.end, true);
+              } else {
+                this.handleTimestampJump(result.text);
+              }
+            });
             return;
           }
         }
       }
-    }, true);
+    };
+
+    this.registerDomEvent(document, "mousedown", handlePointer, true);
+    this.registerDomEvent(document, "click", handlePointer, true);
+    this.registerDomEvent(document, "auxclick", handlePointer, true);
   }
 
   private handleTimestampJump(text: string): boolean {
@@ -478,17 +758,19 @@ export default class MediaScribePlugin extends Plugin {
     // If player was closed, reopen it for the active note!
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView && activeView.file) {
-      void this.detector.extractMediaFromNote(
-        activeView.file,
-        this.settings.mediaPropertyNames,
-        this.settings.playlistNoteProperty,
-        this.settings.verifyMediaContentType ?? true
-      ).then((source) => {
-        if (source) {
-          this.embeddedManager.reopenView(activeView, seconds);
-          new Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
-        }
-      });
+      void this.detector
+        .extractMediaFromNote(
+          activeView.file,
+          this.settings.mediaPropertyNames,
+          this.settings.playlistNoteProperty,
+          this.settings.verifyMediaContentType ?? true
+        )
+        .then((source) => {
+          if (source) {
+            this.embeddedManager.reopenView(activeView, seconds);
+            new Notice(`MediaScribe: Reopened player at ${formatSeconds(seconds)}`);
+          }
+        });
       return true;
     }
 
@@ -497,15 +779,59 @@ export default class MediaScribePlugin extends Plugin {
 
   private setupMarkdownPostProcessor(): void {
     this.registerMarkdownPostProcessor((el: HTMLElement) => {
+      // 1. Process <a> tags generated by Obsidian from [time]() or [time](#t=...) or [start - end]()
+      const anchorTags = el.querySelectorAll<HTMLAnchorElement>("a");
+      anchorTags.forEach((a) => {
+        if (a.classList.contains("mediascribe-timestamp-link")) return;
+        // Strictly verify this is an official markdown link with () and not a bare bracket [text]
+        if (!isOfficialTimestampLink(a)) return;
+
+        const text = a.textContent?.trim() || "";
+        const href = a.getAttribute("href") || "";
+
+        // Check if range: [start - end]()
+        const range = parseTimestampRange(text) || parseTimestampRange(href);
+        if (range) {
+          a.classList.add("mediascribe-timestamp-link", "mediascribe-loop-range-link");
+          a.setAttribute("data-loop-range", `${range.start}-${range.end}`);
+          a.setAttribute("data-loop-start", `${range.start}`);
+          a.setAttribute("data-loop-end", `${range.end}`);
+          a.title = `Click to set A-B Loop: ${formatSeconds(range.start)} - ${formatSeconds(range.end)}`;
+          a.empty();
+          const iconSpan = a.createSpan({ cls: "mediascribe-pill-icon" });
+          setIcon(iconSpan, "repeat");
+          a.createSpan({ cls: "mediascribe-pill-text", text: `${formatSeconds(range.start)} - ${formatSeconds(range.end)}` });
+          return;
+        }
+
+        // Check if single timestamp: [01:23]() or [01:23](#t=83)
+        const sec = parseTimestamp(text) ?? parseTimestamp(href);
+        if (sec !== null) {
+          a.classList.add("mediascribe-timestamp-link");
+          a.setAttribute("data-timestamp", formatSeconds(sec));
+          a.title = `Click to jump to ${formatSeconds(sec)}`;
+          a.empty();
+          const iconSpan = a.createSpan({ cls: "mediascribe-pill-icon" });
+          setIcon(iconSpan, "play");
+          a.createSpan({ cls: "mediascribe-pill-text", text: `${formatSeconds(sec)}` });
+        }
+      });
+
+      // 2. Process any raw unparsed [time]() or [start - end]() in text nodes
+      // (Strictly requires both [] and () so bare [hh:mm] text is never modified!)
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
       const nodesToReplace: { node: Text; parent: Node }[] = [];
 
       let currentNode: Text | null = null;
       while ((currentNode = walker.nextNode() as Text)) {
-        if (/\[\d{1,2}:\d{2}(?::\d{2})?\]/.test(currentNode.nodeValue || "")) {
+        const val = currentNode.nodeValue || "";
+        if (
+          /\[\d{1,2}:\d{2}(?::\d{2})?\s*(?:[-–—~]|\bto\b)\s*\d{1,2}:\d{2}(?::\d{2})?\]\([^)]*\)/.test(val) ||
+          /\[\d{1,2}:\d{2}(?::\d{2})?\]\([^)]*\)/.test(val)
+        ) {
           if (
             currentNode.parentElement &&
-            !currentNode.parentElement.closest(".mediascribe-timestamp-link, code, pre")
+            !currentNode.parentElement.closest(".mediascribe-timestamp-link, a, code, pre")
           ) {
             nodesToReplace.push({ node: currentNode, parent: currentNode.parentNode! });
           }
@@ -514,7 +840,7 @@ export default class MediaScribePlugin extends Plugin {
 
       for (const item of nodesToReplace) {
         const val = item.node.nodeValue || "";
-        const regex = /\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g;
+        const regex = /(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\]\([^)]*\)|\[(\d{1,2}:\d{2}(?::\d{2})?)\]\([^)]*\))/g;
         let lastIdx = 0;
         let match: RegExpExecArray | null;
 
@@ -525,11 +851,45 @@ export default class MediaScribePlugin extends Plugin {
             frag.appendChild(document.createTextNode(val.substring(lastIdx, match.index)));
           }
 
-          const pill = document.createElement("span");
-          pill.className = "mediascribe-timestamp-link";
-          pill.setAttribute("data-timestamp", match[1]);
-          pill.innerText = `⏱️ ${match[1]}`;
-          frag.appendChild(pill);
+          if (match[1] && match[2]) {
+            // Range timestamp! [starttime - endtime]()
+            const startSec = parseTimestamp(match[1]);
+            const endSec = parseTimestamp(match[2]);
+            const pill = document.createElement("span");
+            pill.className = "mediascribe-timestamp-link mediascribe-loop-range-link";
+            if (startSec !== null && endSec !== null) {
+              const minSec = Math.min(startSec, endSec);
+              const maxSec = Math.max(startSec, endSec);
+              pill.setAttribute("data-loop-range", `${minSec}-${maxSec}`);
+              pill.setAttribute("data-loop-start", `${minSec}`);
+              pill.setAttribute("data-loop-end", `${maxSec}`);
+            }
+            pill.title = `Click to set A-B Loop: ${match[1]} - ${match[2]}`;
+            const iconSpan = document.createElement("span");
+            iconSpan.className = "mediascribe-pill-icon";
+            setIcon(iconSpan, "repeat");
+            pill.appendChild(iconSpan);
+            const textSpan = document.createElement("span");
+            textSpan.className = "mediascribe-pill-text";
+            textSpan.textContent = `${match[1]} - ${match[2]}`;
+            pill.appendChild(textSpan);
+            frag.appendChild(pill);
+          } else if (match[3]) {
+            // Single timestamp! [starttime]()
+            const pill = document.createElement("span");
+            pill.className = "mediascribe-timestamp-link";
+            pill.setAttribute("data-timestamp", match[3]);
+            pill.title = `Click to jump to ${match[3]}`;
+            const iconSpan = document.createElement("span");
+            iconSpan.className = "mediascribe-pill-icon";
+            setIcon(iconSpan, "play");
+            pill.appendChild(iconSpan);
+            const textSpan = document.createElement("span");
+            textSpan.className = "mediascribe-pill-text";
+            textSpan.textContent = `${match[3]}`;
+            pill.appendChild(textSpan);
+            frag.appendChild(pill);
+          }
 
           lastIdx = regex.lastIndex;
         }

@@ -39,7 +39,8 @@ export function parseTimestamp(input: string, allowBareSeconds: boolean = false)
   }
 
   // Handle markdown links: [00:16](#t=16) or [00:16]() or [00:16](...)
-  const mdMatch = str.match(/^\[([^\]]+)\](?:\(([^)]*)\))?$/);
+  // Strictly requires both [] and () so bare [00:16] text is never treated as a link
+  const mdMatch = str.match(/^\[([^\]]+)\]\(([^)]*)\)$/);
   if (mdMatch) {
     if (mdMatch[2]) {
       const fromUrl = parseTimestamp(mdMatch[2], true);
@@ -103,7 +104,7 @@ export function parseTimestamp(input: string, allowBareSeconds: boolean = false)
   }
 
   // Match HH:MM:SS or MM:SS or H:MM:SS (with optional brackets)
-  const colons = str.match(/^(?:\[|\()?(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\]|\))?$/);
+  const colons = str.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
   if (colons) {
     if (colons[3] !== undefined) {
       // Hours:Minutes:Seconds
@@ -122,21 +123,81 @@ export function parseTimestamp(input: string, allowBareSeconds: boolean = false)
   return null;
 }
 
+export interface TimestampRange {
+  start: number;
+  end: number;
+  rawStart: string;
+  rawEnd: string;
+}
+
+/**
+ * Parses a range of timestamps into start and end seconds.
+ * Supports:
+ * - "[01:23 - 02:45]" or "01:23 - 02:45"
+ * - "[01:23:00 - 01:25:30]"
+ * - "[1:23-2:45]"
+ * - "[01:23 – 02:45]" (en-dash)
+ * - "[01:23 — 02:45]" (em-dash)
+ * - "[01:23 to 02:45]"
+ * - "[10s - 45s]"
+ * - "[15 - 45]"
+ */
+export function parseTimestampRange(input: string, allowBareBrackets: boolean = false): TimestampRange | null {
+  if (!input) return null;
+  let str = input.trim();
+
+  // Strip wrapping markdown links if present: "[01:23 - 02:45](#...)" or "[01:23 - 02:45]()"
+  const mdMatch = str.match(/^\[([^\]]+)\]\(([^)]*)\)$/);
+  if (mdMatch) {
+    str = mdMatch[1].trim();
+  } else if (str.startsWith("[[") && str.endsWith("]]")) {
+    str = str.substring(2, str.length - 2).trim();
+  } else if (str.startsWith("[") && str.endsWith("]")) {
+    if (!allowBareBrackets) {
+      // Bare [text] without () is strictly rejected as not a markdown link
+      return null;
+    }
+    str = str.substring(1, str.length - 1).trim();
+  } else if (str.startsWith("(") && str.endsWith(")")) {
+    str = str.substring(1, str.length - 1).trim();
+  }
+
+  // Split on separator: -, –, —, ~, or "to"
+  const splitMatch = str.match(/^(.+?)\s*(?:[-–—~]|\bto\b)\s*(.+)$/i);
+  if (!splitMatch) return null;
+
+  const rawStart = splitMatch[1].trim();
+  const rawEnd = splitMatch[2].trim();
+
+  const startSec = parseTimestamp(rawStart, true);
+  const endSec = parseTimestamp(rawEnd, true);
+
+  if (startSec === null || endSec === null) {
+    return null;
+  }
+
+  const min = Math.min(startSec, endSec);
+  const max = Math.max(startSec, endSec);
+
+  return {
+    start: min,
+    end: max,
+    rawStart,
+    rawEnd
+  };
+}
+
 /**
  * Regex patterns to detect timestamps in markdown text
  * Matches:
- * 1. [01:23] or [01:23:45]
- * 2. [01:23](#t=83) or [01:23]()
- * 3. [[#t=83|01:23]]
- * 4. 01:23 or 01:23:45 preceded by space/boundary
+ * 1. [01:23](...) or [01:23]()
+ * 2. [[#t=83|01:23]] or [[01:23]]
  */
 export const TIMESTAMP_REGEX_PATTERNS = [
-  // Markdown link with timestamp in label: [12:34](...) or [01:23:45](...)
-  /\[(\d{1,2}:\d{2}(?::\d{2})?)\](?:\([^)]*\))?/g,
-  // Wikilink: [[#t=123|12:34]]
-  /\[\[(?:#t=[^|]+\|)?(\d{1,2}:\d{2}(?::\d{2})?)\]\]/g,
-  // Standalone bracket: [12:34]
-  /\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g
+  // Markdown link with timestamp in label: [12:34](...) or [12:34]()
+  /\[(\d{1,2}:\d{2}(?::\d{2})?)\]\([^)]*\)/g,
+  // Wikilink: [[#t=123|12:34]] or [[12:34]]
+  /\[\[(?:#t=[^|]+\|)?(\d{1,2}:\d{2}(?::\d{2})?)\]\]/g
 ];
 
 export interface ExtractedTimestamp {
@@ -145,10 +206,14 @@ export interface ExtractedTimestamp {
   index: number;
   length: number;
   lineContent?: string;
+  isRange?: boolean;
+  endSeconds?: number;
 }
 
 /**
- * Extracts all timestamp occurrences from a markdown text, ignoring code blocks and inline code
+ * Extracts all timestamp occurrences from a markdown text, ignoring code blocks and inline code.
+ * Strictly requires markdown link format [timestamp](...) (including empty ()) or wikilink [[...]].
+ * Plain text or bare brackets [hh:mm] are deliberately not extracted as timestamps.
  */
 export function extractTimestampsFromText(text: string): ExtractedTimestamp[] {
   const results: ExtractedTimestamp[] = [];
@@ -171,14 +236,42 @@ export function extractTimestampsFromText(text: string): ExtractedTimestamp[] {
     }
 
     // Mask out inline code spans (`...`) so timestamps inside inline code are never extracted
-    const lineForMatching = line.replace(/`[^`]+`/g, (m) => " ".repeat(m.length));
+    let lineForMatching = line.replace(/`[^`]+`/g, (m) => " ".repeat(m.length));
 
-    // Find timestamps in this line
-    const regex = /(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\](?:\([^)]*\))?|\[\[(?:#t=[^|]+\|)?(\d{1,2}:\d{2}(?::\d{2})?)\]\]|(?<=\s|^)(\d{1,2}:\d{2}(?::\d{2})?)(?=\s|$|[.,!?]))/g;
+    // 1. First extract range timestamps that have both [] and ():
+    // e.g. [01:23 - 02:45]() or [01:23 - 02:45](url) or [[01:23 - 02:45]]
+    const rangeRegex = /(?:\[\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\]|\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~]|\bto\b)\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\]\([^)]*\))/g;
+    let rMatch: RegExpExecArray | null;
+    while ((rMatch = rangeRegex.exec(lineForMatching)) !== null) {
+      const sStr = rMatch[1] || rMatch[3];
+      const eStr = rMatch[2] || rMatch[4];
+      if (sStr && eStr) {
+        const startSec = parseTimestamp(sStr);
+        const endSec = parseTimestamp(eStr);
+        if (startSec !== null && endSec !== null) {
+          results.push({
+            timeSeconds: Math.min(startSec, endSec),
+            displayText: `${sStr} - ${eStr}`,
+            index: charOffset + rMatch.index,
+            length: rMatch[0].length,
+            lineContent: line.trim(),
+            isRange: true,
+            endSeconds: Math.max(startSec, endSec)
+          });
+        }
+      }
+    }
+
+    // Mask out matched ranges so single timestamp regex doesn't match parts of them
+    lineForMatching = lineForMatching.replace(rangeRegex, (m) => " ".repeat(m.length));
+
+    // 2. Find single timestamps that have both [] and () or wikilinks [[]]:
+    // e.g. [01:23]() or [01:23](#t=83) or [01:23](https://...) or [[#t=83|01:23]]
+    const regex = /(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\]\([^)]*\)|\[\[(?:#t=[^|]+\|)?(\d{1,2}:\d{2}(?::\d{2})?)\]\])/g;
     let match: RegExpExecArray | null;
 
     while ((match = regex.exec(lineForMatching)) !== null) {
-      const timeStr = match[1] || match[2] || match[3];
+      const timeStr = match[1] || match[2];
       if (timeStr) {
         const seconds = parseTimestamp(timeStr);
         if (seconds !== null) {
