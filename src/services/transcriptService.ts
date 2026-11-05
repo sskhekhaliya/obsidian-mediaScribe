@@ -67,6 +67,52 @@ export class TranscriptService {
   }
 
   /**
+   * Tries to find and load local SRT or VTT file on the filesystem for a given absolute file path
+   */
+  public async loadLocalTranscriptFromPath(filePath: string): Promise<TranscriptItem[] | null> {
+    try {
+      let clean = filePath.trim();
+      if ((clean.startsWith('"') && clean.endsWith('"')) || (clean.startsWith("'") && clean.endsWith("'"))) {
+        clean = clean.slice(1, -1).trim();
+      }
+      if (clean.toLowerCase().startsWith("file:///")) {
+        clean = decodeURIComponent(clean.slice(8));
+        if (!/^[a-zA-Z]:/.test(clean) && !clean.startsWith("/")) clean = "/" + clean;
+      }
+      clean = clean.replace(/\\\\/g, "\\");
+      const rawPath = clean.split(/[?#]/)[0];
+      const lastDot = rawPath.lastIndexOf(".");
+      const basePath = lastDot > 0 ? rawPath.substring(0, lastDot) : rawPath;
+
+      const fs = (window as any).require ? (window as any).require("fs") : null;
+      if (fs && typeof fs.existsSync === "function") {
+        const candidates = [
+          `${basePath}.srt`,
+          `${basePath}.vtt`,
+          `${basePath}.en.srt`,
+          `${basePath}.en.vtt`,
+          `${basePath}.hi.srt`,
+          `${basePath}.hi.vtt`
+        ];
+        for (const candidate of candidates) {
+          if (fs.existsSync(candidate)) {
+            const content = fs.readFileSync(candidate, "utf8");
+            if (candidate.toLowerCase().endsWith(".vtt")) {
+              return this.parseVTT(content);
+            } else {
+              return this.parseSRT(content);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[MediaScribe] Failed to load disk subtitle file:", err);
+    }
+
+    return null;
+  }
+
+  /**
    * Tries to fetch YouTube captions/subtitles using Innertube Player API with watch-page fallback
    */
   public async fetchYouTubeTranscript(videoId: string): Promise<TranscriptItem[] | null> {

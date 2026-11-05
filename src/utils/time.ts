@@ -288,6 +288,35 @@ export function extractTimestampsFromText(text: string): ExtractedTimestamp[] {
     charOffset += line.length + 1; // +1 for \n
   }
 
-  // Sort by time ascending
-  return results.sort((a, b) => a.timeSeconds - b.timeSeconds);
+  // Sort by appearance in text ascending
+  return results.sort((a, b) => a.index - b.index);
 }
+
+/**
+ * Escapes markdown and Obsidian-specific property/link syntax in subtitle or caption text
+ * so that it is rendered and treated as literal plain text inside Obsidian notes.
+ *
+ * Escapes:
+ * - Square brackets `[` and `]` (prevents wikilinks `[[page]]` and markdown links `[text]()` or `[music]`)
+ * - Hashes `#` (prevents Obsidian tags `#tag` or heading interpretation)
+ * - Carets `^` (prevents Obsidian block reference `^id`)
+ * - Dataview colons `::` (prevents Dataview inline field syntax `key:: value`)
+ */
+export function sanitizeSubtitleForMarkdown(text: string): string {
+  if (!text) return "";
+  // Strip any lingering HTML tags and normalize whitespace
+  let clean = text
+    .replace(/<[^>]*>/g, "")
+    .replace(/\r?\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Escape special syntax without double-escaping already escaped characters
+  return clean
+    .replace(/(?<!\\)\[/g, "\\[")
+    .replace(/(?<!\\)\]/g, "\\]")
+    .replace(/(?<!\\)#/g, "\\#")
+    .replace(/(?<!\\)\^/g, "\\^")
+    .replace(/::/g, "\\::");
+}
+

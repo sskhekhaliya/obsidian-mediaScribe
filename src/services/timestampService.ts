@@ -60,6 +60,42 @@ export class TimestampService {
   }
 
   /**
+   * Format a range of seconds (e.g. start - end) into timestamp link according to settings
+   */
+  public formatTimestampRange(startSec: number, endSec: number): string {
+    const sStr = formatSeconds(startSec, !this.settings.includeTimestampLeadingZero);
+    const eStr = formatSeconds(endSec, !this.settings.includeTimestampLeadingZero);
+    const rangeDisplay = `${sStr} - ${eStr}`;
+    const startInt = Math.floor(startSec);
+
+    switch (this.settings.timestampFormat) {
+      case "full_url_link": {
+        const source = this.sourceGetter ? this.sourceGetter() : null;
+        if (source) {
+          if (source.type === "youtube" && source.videoId) {
+            return `[${rangeDisplay}](https://youtu.be/${source.videoId}?t=${startInt})`;
+          }
+          if (source.isLocal && source.localFile) {
+            return `[${rangeDisplay}](${encodeURI(source.localFile.name)}#t=${startInt})`;
+          }
+          if (source.url && (source.url.startsWith("http://") || source.url.startsWith("https://"))) {
+            const separator = source.url.includes("?") ? "&" : "?";
+            return `[${rangeDisplay}](${source.url}${separator}t=${startInt})`;
+          }
+        }
+        return `[${rangeDisplay}](#t=${startInt})`;
+      }
+      case "markdown_link":
+        return `[${rangeDisplay}](#t=${startInt})`;
+      case "wikilink":
+        return `[[#t=${startInt}|${rangeDisplay}]]`;
+      case "bracket":
+      default:
+        return `[${rangeDisplay}]()`;
+    }
+  }
+
+  /**
    * Inserts the current player timestamp into active markdown editor
    */
   public async insertCurrentTimestamp(activeView: MarkdownView | null): Promise<void> {

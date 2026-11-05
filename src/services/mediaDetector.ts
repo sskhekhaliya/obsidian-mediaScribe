@@ -42,6 +42,14 @@ export class MediaDetector {
       clean = mdLinkMatch[1].trim();
     }
 
+    // Strip wrapping quotes or angle brackets if left over from markdown link
+    if ((clean.startsWith('"') && clean.endsWith('"')) || (clean.startsWith("'") && clean.endsWith("'"))) {
+      clean = clean.slice(1, -1).trim();
+    }
+    if (clean.startsWith("<") && clean.endsWith(">")) {
+      clean = clean.slice(1, -1).trim();
+    }
+
     // 1. Check YouTube
     const ytInfo = this.checkYouTube(clean);
     if (ytInfo) return ytInfo;
@@ -54,11 +62,15 @@ export class MediaDetector {
     const vaultFileInfo = this.checkVaultFile(clean, sourcePath);
     if (vaultFileInfo) return vaultFileInfo;
 
-    // 4. Check Web Direct Media by file extension (.mp4, .mp3, etc.)
+    // 4. Check Local Media File (absolute paths like C:\..., /Users/..., file://..., etc.)
+    const localMediaInfo = this.checkLocalMedia(clean, input);
+    if (localMediaInfo) return localMediaInfo;
+
+    // 5. Check Web Direct Media by file extension (.mp4, .mp3, etc.)
     const webMediaInfo = this.checkWebMedia(clean);
     if (webMediaInfo) return webMediaInfo;
 
-    // 5. Check if already probed and cached
+    // 6. Check if already probed and cached
     const cached = this.probeCache.get(clean);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
       return cached.info;
@@ -126,18 +138,16 @@ export class MediaDetector {
       }
     }
 
-    // 3. Local file:// URL
-    if (clean.startsWith("file://")) {
-      const directInfo = this.checkWebMedia(clean);
-      if (directInfo) return directInfo;
-      if (!verifyContentType) {
-        return {
-          type: "html5_video",
-          url: clean,
-          originalInput: input,
-          isLocal: true
-        };
-      }
+    // 3. Local file:// URL or drive path fallback (even if extension was not initially caught)
+    if (clean.startsWith("file://") || /^[a-zA-Z]:[/\\]/.test(clean) || /^\/[^\/]/.test(clean)) {
+      const resourceUrl = this.getLocalResourceUrl(clean);
+      return {
+        type: "html5_video",
+        url: resourceUrl,
+        originalInput: input,
+        title: this.extractFileNameTitle(clean),
+        isLocal: true
+      };
     }
 
     return null;
@@ -358,6 +368,159 @@ export class MediaDetector {
     return null;
   }
 
+  /**
+   * Checks for local filesystem paths (e.g. C:\..., /Users/..., file://..., \\server\...)
+   * and maps them to an Obsidian app:// local resource URL.
+   */
+  private checkLocalMedia(input: string, originalInput: string): MediaSourceInfo | null {
+    const videoExts = [
+      ".mp4", ".webm", ".mkv", ".mov", ".m4v", ".ogv", ".avi", ".ts", ".3gp", ".wmv", ".asf", ".m3u8", ".mpd"
+    ];
+    const audioExts = [
+      ".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac", ".opus", ".weba", ".oga", ".mid", ".midi", ".wma", ".aiff", ".caf"
+    ];
+
+    let clean = input.trim();
+    if ((clean.startsWith('"') && clean.endsWith('"')) || (clean.startsWith("'") && clean.endsWith("'"))) {
+      clean = clean.slice(1, -1).trim();
+    }
+    if (clean.startsWith("<") && clean.endsWith(">")) {
+      clean = clean.slice(1, -1).trim();
+    }
+
+    const isFileUrl = clean.toLowerCase().startsWith("file://");
+    const isWindowsDrive = /^[a-zA-Z]:[/\\]/.test(clean);
+    const isPosixAbsolute = /^\/[^\/]/.test(clean);
+    const isUnc = /^\\\\/.test(clean);
+
+    if (!isFileUrl && !isWindowsDrive && !isPosixAbsolute && !isUnc) {
+      return null;
+    }
+
+    // Extract path without query parameters or hash
+    let pathForExt = clean;
+    if (isFileUrl) {
+      try {
+        const u = new URL(clean);
+        pathForExt = decodeURIComponent(u.pathname);
+      } catch {
+        pathForExt = clean.split(/[?#]/)[0];
+      }
+    } else {
+      pathForExt = clean.split(/[?#]/)[0];
+    }
+
+    const lowerPath = pathForExt.toLowerCase();
+    const isVideo = videoExts.some((ext) => lowerPath.endsWith(ext));
+    const isAudio = !isVideo && audioExts.some((ext) => lowerPath.endsWith(ext));
+
+    if (!isVideo && !isAudio) {
+      return null;
+    }
+
+    // Parse initial timestamp if present: e.g. #t=120 or ?t=2m15s
+    let initialTime: number | undefined;
+    const tMatch = clean.match(/[?&#](?:t|start)=([^&#]+)/i);
+    if (tMatch && tMatch[1]) {
+      const parsed = parseTimestamp(tMatch[1], true);
+      if (parsed !== null) initialTime = parsed;
+    }
+
+    const title = this.extractFileNameTitle(pathForExt);
+    const resourceUrl = this.getLocalResourceUrl(clean);
+
+    return {
+      type: isVideo ? "html5_video" : "html5_audio",
+      url: resourceUrl,
+      originalInput: originalInput || input,
+      title,
+      initialTime,
+      isLocal: true
+    };
+  }
+
+  /**
+   * Extracts clean file title without extension from a path
+   */
+  public extractFileNameTitle(filePath: string): string {
+    const raw = filePath.split(/[?#]/)[0];
+    const parts = raw.replace(/\\/g, "/").split("/");
+    const filename = parts[parts.length - 1] || "";
+    const lastDot = filename.lastIndexOf(".");
+    if (lastDot > 0) {
+      return filename.substring(0, lastDot);
+    }
+    return filename || "Local Media";
+  }
+
+  /**
+   * Converts a local filesystem path (or file:// URL) into an Obsidian resource URL
+   * that can be safely loaded by HTML5 <video> / <audio> in Obsidian's Electron sandbox.
+   */
+  public getLocalResourceUrl(filePath: string): string {
+    let clean = filePath.trim();
+
+    // Strip wrapping quotes
+    if ((clean.startsWith('"') && clean.endsWith('"')) || (clean.startsWith("'") && clean.endsWith("'"))) {
+      clean = clean.slice(1, -1).trim();
+    }
+    if (clean.startsWith("<") && clean.endsWith(">")) {
+      clean = clean.slice(1, -1).trim();
+    }
+
+    // Strip query/hash for local file path resolution
+    const [pathOnly] = clean.split(/[?#]/);
+    let fsPath = pathOnly;
+
+    // Handle file:// URLs
+    if (fsPath.toLowerCase().startsWith("file:///")) {
+      fsPath = decodeURIComponent(fsPath.slice(8));
+      // On Windows slice(8) leaves "C:/...", on POSIX slice(8) leaves "Users/..." so restore leading slash
+      if (!/^[a-zA-Z]:/.test(fsPath) && !fsPath.startsWith("/")) {
+        fsPath = "/" + fsPath;
+      }
+    } else if (fsPath.toLowerCase().startsWith("file://")) {
+      fsPath = decodeURIComponent(fsPath.slice(7));
+    }
+
+    // Normalize escaped backslashes (common in YAML)
+    fsPath = fsPath.replace(/\\\\/g, "\\");
+
+    // 1. Preferred: Use Obsidian's FileSystemAdapter getResourcePath("file:" + path)
+    try {
+      const adapter = this.app.vault.adapter as any;
+      if (adapter && typeof adapter.getResourcePath === "function") {
+        const res = adapter.getResourcePath("file:" + fsPath);
+        if (res && typeof res === "string") {
+          return res;
+        }
+      }
+    } catch {
+      // Ignore and proceed to fallback
+    }
+
+    // 2. Secondary: If adapter has resourcePathPrefix (e.g. app://local/)
+    try {
+      const adapter = this.app.vault.adapter as any;
+      if (adapter && adapter.resourcePathPrefix) {
+        let normalized = fsPath.replace(/\\/g, "/");
+        if (normalized.startsWith("/")) {
+          normalized = normalized.slice(1);
+        }
+        return `${adapter.resourcePathPrefix}${encodeURI(normalized)}?${Date.now()}`;
+      }
+    } catch {
+      // Ignore
+    }
+
+    // 3. Fallback for Obsidian desktop Electron protocol
+    let normalized = fsPath.replace(/\\/g, "/");
+    if (normalized.startsWith("/")) {
+      normalized = normalized.slice(1);
+    }
+    return `app://local/${encodeURI(normalized)}`;
+  }
+
   private checkWebMedia(input: string): MediaSourceInfo | null {
     const videoExts = [
       ".mp4", ".webm", ".mkv", ".mov", ".m4v", ".ogv", ".avi", ".ts", ".3gp", ".wmv", ".asf", ".m3u8", ".mpd"
@@ -367,61 +530,30 @@ export class MediaDetector {
     ];
 
     try {
-      let pathname = "";
-      let isFileUrl = false;
+      if (input.startsWith("http://") || input.startsWith("https://")) {
+        const url = new URL(input);
+        const pathname = decodeURIComponent(url.pathname).toLowerCase();
 
-      if (input.startsWith("file://")) {
-        const url = new URL(input);
-        pathname = decodeURIComponent(url.pathname).toLowerCase();
-        isFileUrl = true;
-      } else if (input.startsWith("http://") || input.startsWith("https://")) {
-        const url = new URL(input);
-        pathname = decodeURIComponent(url.pathname).toLowerCase();
-      } else {
-        // Direct local file path like C:\video.mp4 or /Users/.../audio.mp3
-        const stripped = input.split(/[?#]/)[0].toLowerCase();
         for (const ext of videoExts) {
-          if (stripped.endsWith(ext)) {
+          if (pathname.endsWith(ext)) {
             return {
               type: "html5_video",
               url: input,
               originalInput: input,
-              isLocal: true
+              isLocal: false
             };
           }
         }
+
         for (const ext of audioExts) {
-          if (stripped.endsWith(ext)) {
+          if (pathname.endsWith(ext)) {
             return {
               type: "html5_audio",
               url: input,
               originalInput: input,
-              isLocal: true
+              isLocal: false
             };
           }
-        }
-        return null;
-      }
-
-      for (const ext of videoExts) {
-        if (pathname.endsWith(ext)) {
-          return {
-            type: "html5_video",
-            url: input,
-            originalInput: input,
-            isLocal: isFileUrl
-          };
-        }
-      }
-
-      for (const ext of audioExts) {
-        if (pathname.endsWith(ext)) {
-          return {
-            type: "html5_audio",
-            url: input,
-            originalInput: input,
-            isLocal: isFileUrl
-          };
         }
       }
     } catch {

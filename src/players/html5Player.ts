@@ -5,6 +5,7 @@ export class HTML5Player extends BasePlayer {
   private url: string;
   private isAudioOnly: boolean;
   private mediaEl: HTMLVideoElement | HTMLAudioElement | null = null;
+  private secondaryAudioEl: HTMLAudioElement | null = null;
   private centerOverlayEl: HTMLElement | null = null;
   private centerPlayBtn: HTMLElement | null = null;
   private initialTime: number;
@@ -122,6 +123,9 @@ export class HTML5Player extends BasePlayer {
     media.addEventListener("play", () => {
       this._isPlaying = true;
       this._hasEnded = false;
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.play().catch(() => {});
+      }
       if (this.centerOverlayEl) {
         this.centerOverlayEl.addClass("is-playing");
       }
@@ -135,13 +139,25 @@ export class HTML5Player extends BasePlayer {
 
     media.addEventListener("pause", () => {
       this._isPlaying = false;
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.pause();
+      }
       if (this.centerOverlayEl) {
         this.centerOverlayEl.removeClass("is-playing");
       }
       this.emit("pause");
     });
 
+    media.addEventListener("seeking", () => {
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.currentTime = media.currentTime;
+      }
+    });
+
     media.addEventListener("timeupdate", () => {
+      if (this.secondaryAudioEl && Math.abs(this.secondaryAudioEl.currentTime - media.currentTime) > 0.25) {
+        this.secondaryAudioEl.currentTime = media.currentTime;
+      }
       this.emit("timeupdate", media.currentTime || 0);
       notifyDuration();
     });
@@ -177,8 +193,12 @@ export class HTML5Player extends BasePlayer {
         if (this._hasEnded || this.mediaEl.ended || (this.mediaEl.duration && this.mediaEl.currentTime >= this.mediaEl.duration - 0.5)) {
           this._hasEnded = false;
           this.mediaEl.currentTime = 0;
+          if (this.secondaryAudioEl) this.secondaryAudioEl.currentTime = 0;
         }
         await this.mediaEl.play();
+        if (this.secondaryAudioEl) {
+          await this.secondaryAudioEl.play().catch(() => {});
+        }
         this._isPlaying = true;
       } catch (err) {
         console.warn("[MediaScribe] Autoplay or play blocked:", err);
@@ -189,6 +209,9 @@ export class HTML5Player extends BasePlayer {
   public async pause(): Promise<void> {
     if (this.mediaEl) {
       this.mediaEl.pause();
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.pause();
+      }
       this._isPlaying = false;
     }
   }
@@ -206,6 +229,9 @@ export class HTML5Player extends BasePlayer {
     if (this.mediaEl) {
       this._hasEnded = false;
       this.mediaEl.currentTime = Math.max(0, seconds);
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.currentTime = Math.max(0, seconds);
+      }
       this.emit("timeupdate", this.mediaEl.currentTime);
     }
   }
@@ -221,6 +247,9 @@ export class HTML5Player extends BasePlayer {
   public setPlaybackRate(rate: number): void {
     if (this.mediaEl) {
       this.mediaEl.playbackRate = rate;
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.playbackRate = rate;
+      }
     }
   }
 
@@ -230,12 +259,67 @@ export class HTML5Player extends BasePlayer {
 
   public setVolume(volume: number): void {
     if (this.mediaEl) {
-      this.mediaEl.volume = Math.max(0, Math.min(100, volume)) / 100;
+      const vol = Math.max(0, Math.min(100, volume)) / 100;
+      this.mediaEl.volume = vol;
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.volume = vol;
+      }
     }
   }
 
   public async getVolume(): Promise<number> {
     return (this.mediaEl?.volume || 1) * 100;
+  }
+
+  public setSecondaryAudio(url: string | null): void {
+    if (!url) {
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.pause();
+        this.secondaryAudioEl.src = "";
+        this.secondaryAudioEl.remove();
+        this.secondaryAudioEl = null;
+      }
+      if (this.mediaEl) {
+        this.mediaEl.muted = false;
+      }
+      return;
+    }
+
+    if (!this.secondaryAudioEl) {
+      this.secondaryAudioEl = document.createElement("audio");
+      this.secondaryAudioEl.style.display = "none";
+      this.secondaryAudioEl.preload = "auto";
+      this.containerEl?.appendChild(this.secondaryAudioEl);
+    }
+
+    if (this.mediaEl) {
+      this.mediaEl.muted = true;
+    }
+
+    const targetTime = this.mediaEl?.currentTime || 0;
+    const currentRate = this.mediaEl?.playbackRate || 1.0;
+    const currentVol = this.mediaEl?.volume ?? 1.0;
+
+    this.secondaryAudioEl.src = url;
+    this.secondaryAudioEl.playbackRate = currentRate;
+    this.secondaryAudioEl.volume = currentVol;
+
+    const syncStartTime = () => {
+      if (this.secondaryAudioEl && this.mediaEl) {
+        const cur = this.mediaEl.currentTime || targetTime;
+        this.secondaryAudioEl.currentTime = cur;
+        if (this._isPlaying && !this.mediaEl.paused) {
+          this.secondaryAudioEl.play().catch(() => {});
+        }
+      }
+    };
+
+    if (this.secondaryAudioEl.readyState >= 1) {
+      syncStartTime();
+    } else {
+      this.secondaryAudioEl.addEventListener("loadedmetadata", syncStartTime, { once: true });
+      this.secondaryAudioEl.addEventListener("canplay", syncStartTime, { once: true });
+    }
   }
 
   public async requestPictureInPicture(): Promise<void> {
@@ -311,6 +395,12 @@ export class HTML5Player extends BasePlayer {
   }
 
   public destroy(): void {
+    if (this.secondaryAudioEl) {
+      this.secondaryAudioEl.pause();
+      this.secondaryAudioEl.src = "";
+      this.secondaryAudioEl.remove();
+      this.secondaryAudioEl = null;
+    }
     if (this.centerOverlayEl) {
       this.centerOverlayEl.remove();
       this.centerOverlayEl = null;

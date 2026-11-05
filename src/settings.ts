@@ -1,6 +1,6 @@
 import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import MediaScribePlugin from "./main";
-import { PlayerLayoutMode, TimestampFormat } from "./types";
+import { PlayerLayoutMode, SubtitleQuoteAction, TimestampFormat } from "./types";
 import { FolderSuggest } from "./ui/folderSuggest";
 
 export class MediaScribeSettingTab extends PluginSettingTab {
@@ -225,6 +225,23 @@ export class MediaScribeSettingTab extends PluginSettingTab {
           .setValue(!this.plugin.settings.includeTimestampLeadingZero)
           .onChange(async (val) => {
             this.plugin.settings.includeTimestampLeadingZero = !val;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Default Subtitle Quote Action")
+      .setDesc("Choose the default behavior when clicking the Quote button on the player toolbar or triggering the default quote hotkey.")
+      .addDropdown((drop) => {
+        drop
+          .addOption("quote", "Quote Dialogue (> [time] text)")
+          .addOption("range", "Quote with A-B Loop Range (> [start - end] text)")
+          .addOption("bullet", "Bullet Point (- [time] text)")
+          .addOption("dialogue_only", "Dialogue Only without Timestamp")
+          .addOption("clipboard", "Copy Subtitle to Clipboard")
+          .setValue(this.plugin.settings.defaultQuoteAction || "quote")
+          .onChange(async (val) => {
+            this.plugin.settings.defaultQuoteAction = val as SubtitleQuoteAction;
             await this.plugin.saveSettings();
           });
       });

@@ -1,5 +1,5 @@
 import { App, MarkdownView, Menu, Notice, Platform, normalizePath, setIcon } from "obsidian";
-import { EmbeddedPosition, IMediaPlayer, MediaScribeSettings, MediaSourceInfo, PlaylistItem, StoredSidePanelState, TranscriptItem } from "../types";
+import { AudioTrackInfo, EmbeddedPosition, IMediaPlayer, MediaScribeSettings, MediaSourceInfo, MediaTracksResult, PlaylistItem, StoredSidePanelState, SubtitleQuoteAction, SubtitleTrackInfo, TranscriptItem, isSameMediaSource } from "../types";
 import { YouTubePlayer } from "../players/youtubePlayer";
 import { HTML5Player } from "../players/html5Player";
 import { ScreenshotService } from "../services/screenshotService";
@@ -7,9 +7,10 @@ import { TimestampService } from "../services/timestampService";
 import { TypingScribeService } from "../services/typingScribeService";
 import { TranscriptService } from "../services/transcriptService";
 import { AmbientGlowService } from "../services/ambientGlowService";
+import { MediaTrackService } from "../services/mediaTrackService";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { TimelineMarkers } from "./TimelineMarkers";
-import { formatSeconds, parseTimestamp, parseTimestampRange } from "../utils/time";
+import { formatSeconds, parseTimestamp, parseTimestampRange, sanitizeSubtitleForMarkdown } from "../utils/time";
 import { fetchYouTubeTitle, fetchYouTubeVideoMetadata, fetchYouTubePlaylistItems, getCachedYouTubeTitle } from "../utils/youtube";
 import { setDynamicTooltip } from "../utils/hotkey";
 
@@ -49,6 +50,11 @@ export class MediaScribeEmbeddedWidget {
   private nextVideoBtn: HTMLButtonElement | null = null;
   private playlistDrawerAutoplaySwitch: HTMLElement | null = null;
   private speedBtn: HTMLButtonElement | null = null;
+  private settingsBtn: HTMLElement | null = null;
+  private settingsPanelEl: HTMLElement | null = null;
+  private activeSettingsTab: "main" | "speed" | "subtitles" | "audio" = "main";
+  private onDocPointerDownHandler: ((e: PointerEvent) => void) | null = null;
+  private currentPlaybackRate: number = 1.0;
 
   // State
   private currentTime: number = 0;
@@ -89,6 +95,11 @@ export class MediaScribeEmbeddedWidget {
   private captionsOverlayEl: HTMLElement | null = null;
   private captionsTextEl: HTMLElement | null = null;
   private currentCaptionText: string = "";
+  private mediaTrackService: MediaTrackService;
+  private currentTracksResult: MediaTracksResult | null = null;
+  private activeAudioStreamIndex: number | null = null;
+  private activeSubtitleStreamIndex: number | null = null;
+  private trackSelectBtn: HTMLElement | null = null;
   private posBtn: HTMLButtonElement | null = null;
   private lastAppliedPosition: EmbeddedPosition = "top";
   private onFullscreenChangeHandler: (() => void) | null = null;
@@ -103,6 +114,9 @@ export class MediaScribeEmbeddedWidget {
       if (this.lastAppliedPosition !== currentEffective) {
         this.applyPositionStyles();
       }
+    }
+    if (this.settingsPanelEl && !this.settingsPanelEl.hasClass("is-hidden")) {
+      this.updateSettingsPanelPosition();
     }
   };
 
@@ -127,6 +141,7 @@ export class MediaScribeEmbeddedWidget {
     this.timestampService = timestampService;
     this.typingScribeService = typingScribeService;
     this.transcriptService = transcriptService;
+    this.mediaTrackService = new MediaTrackService(this.app);
     this.onSettingsChange = onSettingsChange;
     this.onClose = onClose;
     this.onPlay = onPlay;
@@ -308,10 +323,10 @@ export class MediaScribeEmbeddedWidget {
       this.fullscreenIdleTimeout = null;
     }
 
-    if (this.isHoveringControls) return;
+    if (this.isHoveringControls || (this.settingsPanelEl && !this.settingsPanelEl.hasClass("is-hidden"))) return;
 
     this.fullscreenIdleTimeout = window.setTimeout(() => {
-      if (this.isFullscreenActive() && !this.isHoveringControls) {
+      if (this.isFullscreenActive() && !this.isHoveringControls && (!this.settingsPanelEl || this.settingsPanelEl.hasClass("is-hidden"))) {
         this.hostEl.addClass("mediascribe-fullscreen-idle");
       }
     }, 2500);
@@ -326,7 +341,7 @@ export class MediaScribeEmbeddedWidget {
   }
 
   public async loadMedia(source: MediaSourceInfo, autoPlay: boolean = false): Promise<void> {
-    if (this.currentSource && this.currentSource.url === source.url && this.currentSource.videoId === source.videoId && this.player) {
+    if (this.player && this.currentSource && isSameMediaSource(this.currentSource, source)) {
       return;
     }
 
@@ -336,6 +351,7 @@ export class MediaScribeEmbeddedWidget {
       this.player.destroy();
       this.player = null;
     }
+    this.mediaTrackService.cleanupTempFiles();
 
     if (source.isPlaylist && source.playlistItems && source.videoId) {
       const idx = source.playlistItems.findIndex((it) => it.videoId === source.videoId);
@@ -346,6 +362,12 @@ export class MediaScribeEmbeddedWidget {
 
     this.currentSource = source;
     this.playlistIndex = typeof source.playlistIndex === "number" && source.playlistIndex >= 0 ? source.playlistIndex : 0;
+    this.currentTracksResult = null;
+    this.activeAudioStreamIndex = null;
+    this.activeSubtitleStreamIndex = null;
+    if (this.trackSelectBtn) {
+      this.trackSelectBtn.addClass("is-hidden");
+    }
 
     if (!source.title && source.videoId) {
       const cachedTitle = getCachedYouTubeTitle(source.videoId);
@@ -363,6 +385,8 @@ export class MediaScribeEmbeddedWidget {
     } else if (this.settings.rememberPlaybackPosition) {
       if (source.videoId && typeof this.settings.storedPlaybackPositions?.[source.videoId] === "number") {
         startPosition = this.settings.storedPlaybackPositions[source.videoId];
+      } else if (source.originalInput && typeof this.settings.storedPlaybackPositions?.[source.originalInput] === "number") {
+        startPosition = this.settings.storedPlaybackPositions[source.originalInput];
       } else if (source.url && typeof this.settings.storedPlaybackPositions?.[source.url] === "number") {
         startPosition = this.settings.storedPlaybackPositions[source.url];
       }
@@ -402,6 +426,9 @@ export class MediaScribeEmbeddedWidget {
     this.updatePlaylistUI();
     this.loadTranscript(source);
     this.resolveYouTubeInfo(source);
+    if (source.isLocal) {
+      this.probeLocalMediaTracks(source);
+    }
     this.restoreSidePanelState(source);
   }
 
@@ -563,6 +590,9 @@ export class MediaScribeEmbeddedWidget {
     // 6. Fullscreen Shield (Interception layer over iframes for wake-on-mouse & play/pause)
     this.buildFullscreenShield(this.hostEl);
 
+    // 7. Settings Panel (Translucent YouTube-style floating panel)
+    this.buildSettingsPanel(this.hostEl);
+
     // Ensure side panel is properly positioned (in playerArea for top, or below controls for vertical)
     this.updateSidePanelPosition();
   }
@@ -647,19 +677,575 @@ export class MediaScribeEmbeddedWidget {
   }
 
   public async toggleCaptions(): Promise<void> {
-    this.areCaptionsEnabled = !this.areCaptionsEnabled;
-    this.transcriptBtn?.toggleClass("is-active", this.areCaptionsEnabled);
-    this.settings.enableCaptions = this.areCaptionsEnabled;
-    await this.onSettingsChange(this.settings);
-
     if (this.areCaptionsEnabled) {
-      new Notice("MediaScribe: Subtitles ON");
-      this.updateCaptions(this.currentTime);
+      this.disableSubtitles();
     } else {
+      if (this.currentTracksResult?.subtitleTracks?.length) {
+        const defSub = this.currentTracksResult.subtitleTracks.find((s) => s.language === "eng") || this.currentTracksResult.subtitleTracks[0];
+        if (defSub) {
+          await this.switchSubtitleTrack(defSub);
+          return;
+        }
+      }
+      this.areCaptionsEnabled = true;
+      this.settings.enableCaptions = true;
+      await this.onSettingsChange(this.settings);
+      this.updateCaptions(this.currentTime);
+      new Notice("MediaScribe: Subtitles ON");
+    }
+  }
+
+  private getMediaStorageKey(): string {
+    if (!this.currentSource) return "";
+    return this.currentSource.originalInput || this.currentSource.url || "";
+  }
+
+  private async probeLocalMediaTracks(source: MediaSourceInfo): Promise<void> {
+    try {
+      const filePath = source.originalInput || source.url;
+      const tracks = await this.mediaTrackService.probeTracks(filePath);
+      if (!tracks || this.currentSource !== source) return;
+
+      this.currentTracksResult = tracks;
+      const fileKey = this.getMediaStorageKey();
+
+      // 1. Restore saved Audio track
+      if (this.settings.storedAudioTracks && fileKey && this.settings.storedAudioTracks[fileKey] !== undefined) {
+        const savedAudioIndex = this.settings.storedAudioTracks[fileKey];
+        const matchedAudio = tracks.audioTracks.find((t) => t.index === savedAudioIndex);
+        if (matchedAudio) {
+          await this.switchAudioTrack(matchedAudio, false);
+        }
+      }
+
+      // 2. Restore saved Subtitle track
+      if (this.settings.storedSubtitleTracks && fileKey && this.settings.storedSubtitleTracks[fileKey] !== undefined) {
+        const savedSubIndex = this.settings.storedSubtitleTracks[fileKey];
+        if (savedSubIndex === -1 || savedSubIndex === null) {
+          this.disableSubtitles(false);
+        } else {
+          const matchedSub = tracks.subtitleTracks.find((s) => s.index === savedSubIndex);
+          if (matchedSub) {
+            await this.switchSubtitleTrack(matchedSub, false);
+          }
+        }
+      } else if (this.areCaptionsEnabled && this.currentTranscriptItems.length === 0 && tracks.subtitleTracks.length > 0) {
+        const defSub = tracks.subtitleTracks.find((s) => s.language === "eng") || tracks.subtitleTracks[0];
+        if (defSub) {
+          await this.switchSubtitleTrack(defSub, false);
+        }
+      }
+    } catch (err) {
+      console.warn("[MediaScribe] Local track probing failed:", err);
+    }
+  }
+
+  public showSettingsMenu(event?: MouseEvent): void {
+    if (event) event.stopPropagation();
+    this.toggleSettingsPanel();
+  }
+
+  public showSpeedMenu(event?: MouseEvent): void {
+    if (event) event.stopPropagation();
+    this.openSettingsPanel("speed");
+  }
+
+  public showSubtitlesMenu(event?: MouseEvent): void {
+    if (event) event.stopPropagation();
+    this.openSettingsPanel("subtitles");
+  }
+
+  public showAudioTrackMenu(event?: MouseEvent): void {
+    if (event) event.stopPropagation();
+    this.openSettingsPanel("audio");
+  }
+
+  private buildSettingsPanel(parentEl: HTMLElement): void {
+    this.settingsPanelEl = parentEl.createDiv({ cls: "mediascribe-settings-panel is-hidden" });
+    this.settingsPanelEl.style.display = "none";
+
+    // Stop events from propagating or causing unwanted triggers in the player
+    this.settingsPanelEl.addEventListener("click", (e) => e.stopPropagation());
+    this.settingsPanelEl.addEventListener("dblclick", (e) => e.stopPropagation());
+    this.settingsPanelEl.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+    this.settingsPanelEl.addEventListener("mouseenter", () => {
+      this.isHoveringControls = true;
+      this.resetFullscreenIdleTimer();
+    });
+    this.settingsPanelEl.addEventListener("mouseleave", () => {
+      this.isHoveringControls = false;
+      if (this.isFullscreenActive()) {
+        this.resetFullscreenIdleTimer();
+      }
+    });
+
+    this.onDocPointerDownHandler = (e: PointerEvent) => {
+      if (!this.settingsPanelEl || this.settingsPanelEl.hasClass("is-hidden")) return;
+      const target = e.target as HTMLElement | null;
+      if (this.settingsPanelEl.contains(target) || this.settingsBtn?.contains(target)) {
+        return;
+      }
+      this.closeSettingsPanel();
+    };
+    document.addEventListener("pointerdown", this.onDocPointerDownHandler, true);
+  }
+
+  public toggleSettingsPanel(): void {
+    if (!this.settingsPanelEl) return;
+    if (this.settingsPanelEl.hasClass("is-hidden") || this.settingsPanelEl.style.display === "none") {
+      this.openSettingsPanel("main");
+    } else {
+      this.closeSettingsPanel();
+    }
+  }
+
+  public openSettingsPanel(tab: "main" | "speed" | "subtitles" | "audio" = "main"): void {
+    if (!this.settingsPanelEl) return;
+    this.activeSettingsTab = tab;
+    this.renderSettingsContent();
+    this.updateSettingsPanelPosition();
+    this.settingsPanelEl.removeClass("is-hidden");
+    this.settingsPanelEl.style.display = "flex";
+  }
+
+  public closeSettingsPanel(): void {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.addClass("is-hidden");
+    this.settingsPanelEl.style.display = "none";
+  }
+
+  private updateSettingsPanelPosition(): void {
+    if (!this.settingsPanelEl || !this.settingsBtn) return;
+    if (this.isFullscreenActive()) {
+      this.settingsPanelEl.style.removeProperty("top");
+      this.settingsPanelEl.style.removeProperty("bottom");
+      this.settingsPanelEl.style.removeProperty("right");
+      this.settingsPanelEl.style.removeProperty("left");
+      return;
+    }
+    const hostRect = this.hostEl.getBoundingClientRect();
+    const btnRect = this.settingsBtn.getBoundingClientRect();
+    const bottomOffset = Math.max(8, hostRect.bottom - btnRect.top + 6);
+    const rightOffset = Math.max(8, hostRect.right - btnRect.right);
+
+    this.settingsPanelEl.style.bottom = `${bottomOffset}px`;
+    this.settingsPanelEl.style.right = `${rightOffset}px`;
+  }
+
+  private renderSettingsContent(): void {
+    if (!this.settingsPanelEl) return;
+    switch (this.activeSettingsTab) {
+      case "speed":
+        this.renderSpeedSubmenu();
+        break;
+      case "subtitles":
+        this.renderSubtitlesSubmenu();
+        break;
+      case "audio":
+        this.renderAudioSubmenu();
+        break;
+      case "main":
+      default:
+        this.renderMainSettingsMenu();
+        break;
+    }
+  }
+
+  private renderMainSettingsMenu(): void {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.empty();
+
+    const contentEl = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-content" });
+
+    // a. Playback Speed
+    const currentSpeed = this.currentPlaybackRate || 1.0;
+    const speedRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const speedLeft = speedRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const speedIcon = speedLeft.createSpan();
+    setIcon(speedIcon, "gauge");
+    speedLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Playback Speed" });
+    const speedRight = speedRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    speedRight.createSpan({ text: `${currentSpeed}x` });
+    const speedChevron = speedRight.createSpan();
+    setIcon(speedChevron, "chevron-right");
+    speedRow.addEventListener("click", () => {
+      this.openSettingsPanel("speed");
+    });
+
+    // b. Auto-Pause While Typing
+    const isTypingActive = this.typingScribeService.active;
+    const typingRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const typingLeft = typingRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const typingIcon = typingLeft.createSpan();
+    setIcon(typingIcon, "pen-tool");
+    typingLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Auto-Pause While Typing" });
+    const typingRight = typingRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    typingRight.createSpan({ text: isTypingActive ? "On" : "Off" });
+    if (isTypingActive) {
+      const checkSpan = typingRight.createSpan({ cls: "mediascribe-settings-item-check" });
+      setIcon(checkSpan, "check");
+    }
+    typingRow.addEventListener("click", () => {
+      const active = this.typingScribeService.toggle();
+      new Notice(`MediaScribe: Auto-Pause While Typing ${active ? "ON" : "OFF"}`);
+      this.renderMainSettingsMenu();
+    });
+
+    // c. Captions / Subtitles
+    const subLabel = this.areCaptionsEnabled ? (this.getActiveSubtitleLabel() || "On") : "Off";
+    const subRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const subLeft = subRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const subIcon = subLeft.createSpan();
+    setIcon(subIcon, "subtitles");
+    subLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Subtitles" });
+    const subRight = subRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    subRight.createSpan({ text: subLabel });
+    const subChevron = subRight.createSpan();
+    setIcon(subChevron, "chevron-right");
+    subRow.addEventListener("click", () => {
+      this.openSettingsPanel("subtitles");
+    });
+
+    // d. Audio Track
+    const audioLabel = this.getActiveAudioLabel() || "Default";
+    const audioRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const audioLeft = audioRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const audioIcon = audioLeft.createSpan();
+    setIcon(audioIcon, "headphones");
+    audioLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Audio Track" });
+    const audioRight = audioRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    audioRight.createSpan({ text: audioLabel });
+    const audioChevron = audioRight.createSpan();
+    setIcon(audioChevron, "chevron-right");
+    audioRow.addEventListener("click", () => {
+      this.openSettingsPanel("audio");
+    });
+
+    // e. A-B Loop
+    const loopRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const loopLeft = loopRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const loopIcon = loopLeft.createSpan();
+    setIcon(loopIcon, "repeat");
+    loopLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "A-B Repeat Loop" });
+    const loopRight = loopRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    loopRight.createSpan({ text: this.isLooping ? "On" : "Off" });
+    if (this.isLooping) {
+      const checkSpan = loopRight.createSpan({ cls: "mediascribe-settings-item-check" });
+      setIcon(checkSpan, "check");
+    }
+    loopRow.addEventListener("click", () => {
+      this.toggleLoop();
+      this.renderMainSettingsMenu();
+    });
+  }
+
+  private renderSpeedSubmenu(): void {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.empty();
+
+    const header = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-header" });
+    const backIcon = header.createSpan();
+    setIcon(backIcon, "chevron-left");
+    header.createSpan({ text: "Playback Speed" });
+    header.addEventListener("click", () => {
+      this.openSettingsPanel("main");
+    });
+
+    const contentEl = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-content" });
+    const speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+    const currentSpeed = this.currentPlaybackRate || 1.0;
+
+    for (const sp of speeds) {
+      const isSelected = Math.abs(currentSpeed - sp) < 0.01;
+      const row = contentEl.createDiv({
+        cls: `mediascribe-settings-item ${isSelected ? "is-selected" : ""}`
+      });
+      const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+      left.createSpan({ cls: "mediascribe-settings-item-label", text: sp === 1.0 ? "1.0x (Normal)" : `${sp}x` });
+      if (isSelected) {
+        const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+        const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+        setIcon(check, "check");
+      }
+      row.addEventListener("click", () => {
+        this.setPlaybackSpeed(sp);
+        this.openSettingsPanel("main");
+      });
+    }
+  }
+
+  private renderSubtitlesSubmenu(): void {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.empty();
+
+    const header = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-header" });
+    const backIcon = header.createSpan();
+    setIcon(backIcon, "chevron-left");
+    header.createSpan({ text: "Subtitles" });
+    header.addEventListener("click", () => {
+      this.openSettingsPanel("main");
+    });
+
+    const contentEl = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-content" });
+
+    // Off option
+    const isOff = !this.areCaptionsEnabled;
+    const offRow = contentEl.createDiv({
+      cls: `mediascribe-settings-item ${isOff ? "is-selected" : ""}`
+    });
+    const offLeft = offRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    offLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Off" });
+    if (isOff) {
+      const offRight = offRow.createDiv({ cls: "mediascribe-settings-item-right" });
+      const check = offRight.createSpan({ cls: "mediascribe-settings-item-check" });
+      setIcon(check, "check");
+    }
+    offRow.addEventListener("click", () => {
+      this.disableSubtitles(true);
+      this.openSettingsPanel("main");
+    });
+
+    // Subtitle tracks
+    if (this.currentTracksResult?.subtitleTracks && this.currentTracksResult.subtitleTracks.length > 0) {
+      for (const sub of this.currentTracksResult.subtitleTracks) {
+        const isSelected = this.areCaptionsEnabled && this.activeSubtitleStreamIndex === sub.index;
+        const row = contentEl.createDiv({
+          cls: `mediascribe-settings-item ${isSelected ? "is-selected" : ""}`
+        });
+        const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+        left.createSpan({ cls: "mediascribe-settings-item-label", text: sub.languageLabel });
+        if (isSelected) {
+          const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+          const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+          setIcon(check, "check");
+        }
+        row.addEventListener("click", async () => {
+          await this.switchSubtitleTrack(sub, true);
+          this.openSettingsPanel("main");
+        });
+      }
+    } else if (this.currentTranscriptItems && this.currentTranscriptItems.length > 0) {
+      const isOn = this.areCaptionsEnabled;
+      const row = contentEl.createDiv({
+        cls: `mediascribe-settings-item ${isOn ? "is-selected" : ""}`
+      });
+      const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+      left.createSpan({ cls: "mediascribe-settings-item-label", text: "Standard Subtitles" });
+      if (isOn) {
+        const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+        const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+        setIcon(check, "check");
+      }
+      row.addEventListener("click", async () => {
+        this.areCaptionsEnabled = true;
+        this.settings.enableCaptions = true;
+        const fileKey = this.getMediaStorageKey();
+        if (fileKey) {
+          if (!this.settings.storedSubtitleTracks) this.settings.storedSubtitleTracks = {};
+          this.settings.storedSubtitleTracks[fileKey] = 0;
+        }
+        await this.onSettingsChange(this.settings);
+        this.updateCaptions(this.currentTime);
+        new Notice("MediaScribe: Subtitles ON");
+        this.openSettingsPanel("main");
+      });
+    } else {
+      const row = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+      const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+      left.createSpan({ cls: "mediascribe-settings-item-label", text: "No subtitles available" });
+    }
+  }
+
+  private renderAudioSubmenu(): void {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.empty();
+
+    const header = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-header" });
+    const backIcon = header.createSpan();
+    setIcon(backIcon, "chevron-left");
+    header.createSpan({ text: "Audio Track" });
+    header.addEventListener("click", () => {
+      this.openSettingsPanel("main");
+    });
+
+    const contentEl = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-content" });
+
+    if (this.currentTracksResult?.audioTracks && this.currentTracksResult.audioTracks.length > 0) {
+      for (const track of this.currentTracksResult.audioTracks) {
+        const isSelected = this.activeAudioStreamIndex === track.index || (this.activeAudioStreamIndex === null && track.isDefault);
+        const row = contentEl.createDiv({
+          cls: `mediascribe-settings-item ${isSelected ? "is-selected" : ""}`
+        });
+        const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+        left.createSpan({
+          cls: "mediascribe-settings-item-label",
+          text: `${track.languageLabel}${track.isDefault ? " (Default)" : ""}`
+        });
+        if (isSelected) {
+          const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+          const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+          setIcon(check, "check");
+        }
+        row.addEventListener("click", async () => {
+          await this.switchAudioTrack(track, true);
+          this.openSettingsPanel("main");
+        });
+      }
+    } else {
+      const row = contentEl.createDiv({ cls: "mediascribe-settings-item is-selected" });
+      const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+      left.createSpan({ cls: "mediascribe-settings-item-label", text: "Default Audio" });
+      const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+      const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+      setIcon(check, "check");
+    }
+  }
+
+  private getActiveSubtitleLabel(): string {
+    if (!this.areCaptionsEnabled) return "Off";
+    if (this.activeSubtitleStreamIndex !== null && this.currentTracksResult?.subtitleTracks) {
+      const match = this.currentTracksResult.subtitleTracks.find((s) => s.index === this.activeSubtitleStreamIndex);
+      if (match) return match.languageLabel;
+    }
+    if (this.currentTranscriptItems && this.currentTranscriptItems.length > 0) {
+      return "On";
+    }
+    return "Off";
+  }
+
+  private getActiveAudioLabel(): string {
+    if (this.activeAudioStreamIndex !== null && this.currentTracksResult?.audioTracks) {
+      const match = this.currentTracksResult.audioTracks.find((t) => t.index === this.activeAudioStreamIndex);
+      if (match) return match.languageLabel;
+    }
+    if (this.currentTracksResult?.audioTracks && this.currentTracksResult.audioTracks.length > 0) {
+      const def = this.currentTracksResult.audioTracks.find((t) => t.isDefault) || this.currentTracksResult.audioTracks[0];
+      return def ? def.languageLabel : "Default";
+    }
+    return "Default";
+  }
+
+  public setPlaybackSpeed(speed: number): void {
+    this.currentPlaybackRate = speed;
+    this.player?.setPlaybackRate(speed);
+    new Notice(`MediaScribe: Playback Speed ${speed}x`);
+  }
+
+  private showTrackMenu(event: MouseEvent): void {
+    this.showSettingsMenu(event);
+  }
+
+  private async switchAudioTrack(track: AudioTrackInfo, showNotice: boolean = true): Promise<void> {
+    if (!this.currentSource) return;
+
+    const fileKey = this.getMediaStorageKey();
+    if (fileKey) {
+      if (!this.settings.storedAudioTracks) this.settings.storedAudioTracks = {};
+      this.settings.storedAudioTracks[fileKey] = track.index;
+      await this.onSettingsChange(this.settings);
+    }
+
+    if (this.activeAudioStreamIndex === track.index) {
+      return;
+    }
+
+    if (track.isDefault) {
+      this.activeAudioStreamIndex = track.index;
+      this.player?.setSecondaryAudio?.(null);
+      if (showNotice) {
+        new Notice(`MediaScribe: Audio: ${track.languageLabel} (Default)`);
+      }
+      return;
+    }
+
+    if (showNotice) {
+      new Notice(`MediaScribe: Loading ${track.languageLabel} audio track...`);
+    }
+
+    const audioUrl = await this.mediaTrackService.extractAudioTrack(
+      this.currentSource.originalInput || this.currentSource.url,
+      track.index
+    );
+
+    if (audioUrl) {
+      this.activeAudioStreamIndex = track.index;
+      this.player?.setSecondaryAudio?.(audioUrl);
+      if (showNotice) {
+        new Notice(`MediaScribe: Switched audio to ${track.languageLabel}`);
+      }
+    } else {
+      if (showNotice) {
+        new Notice("MediaScribe: Failed to extract audio track.");
+      }
+    }
+  }
+
+  private async switchSubtitleTrack(sub: SubtitleTrackInfo, showNotice: boolean = true): Promise<void> {
+    if (!this.currentSource) return;
+
+    const fileKey = this.getMediaStorageKey();
+    if (fileKey) {
+      if (!this.settings.storedSubtitleTracks) this.settings.storedSubtitleTracks = {};
+      this.settings.storedSubtitleTracks[fileKey] = sub.index;
+      await this.onSettingsChange(this.settings);
+    }
+
+    if (this.activeSubtitleStreamIndex === sub.index && this.currentTranscriptItems && this.currentTranscriptItems.length > 0) {
+      this.areCaptionsEnabled = true;
+      this.settings.enableCaptions = true;
+      this.updateCaptions(this.currentTime);
+      return;
+    }
+
+    if (showNotice) {
+      new Notice(`MediaScribe: Loading ${sub.languageLabel} subtitles...`);
+    }
+
+    const vtt = await this.mediaTrackService.extractSubtitleVTT(
+      this.currentSource.originalInput || this.currentSource.url,
+      sub.index
+    );
+
+    if (vtt) {
+      const items = this.transcriptService.parseVTT(vtt);
+      if (items && items.length > 0) {
+        this.currentTranscriptItems = items;
+        this.transcriptPanel?.setItems(items);
+        this.activeSubtitleStreamIndex = sub.index;
+        this.areCaptionsEnabled = true;
+        this.settings.enableCaptions = true;
+        await this.onSettingsChange(this.settings);
+        this.updateCaptions(this.currentTime);
+        if (showNotice) {
+          new Notice(`MediaScribe: Subtitles: ${sub.languageLabel}`);
+        }
+        return;
+      }
+    }
+
+    if (showNotice) {
+      new Notice(`MediaScribe: Could not load ${sub.languageLabel} subtitles.`);
+    }
+  }
+
+  private disableSubtitles(showNotice: boolean = true): void {
+    this.areCaptionsEnabled = false;
+    this.activeSubtitleStreamIndex = null;
+    this.settings.enableCaptions = false;
+
+    const fileKey = this.getMediaStorageKey();
+    if (fileKey) {
+      if (!this.settings.storedSubtitleTracks) this.settings.storedSubtitleTracks = {};
+      this.settings.storedSubtitleTracks[fileKey] = -1;
+    }
+
+    this.onSettingsChange(this.settings);
+    this.captionsOverlayEl?.removeClass("is-visible");
+    this.currentCaptionText = "";
+    if (this.captionsTextEl) this.captionsTextEl.setText("");
+    if (showNotice) {
       new Notice("MediaScribe: Subtitles OFF");
-      this.captionsOverlayEl?.removeClass("is-visible");
-      this.currentCaptionText = "";
-      if (this.captionsTextEl) this.captionsTextEl.setText("");
     }
   }
 
@@ -998,37 +1584,8 @@ export class MediaScribeEmbeddedWidget {
       setIcon(volumeBtn, val === 0 ? "volume-x" : (val < 50 ? "volume-1" : "volume-2"));
     });
 
-    // 2. RIGHT CONTROLS GROUP (Other Menu)
+    // 2. RIGHT CONTROLS GROUP (Toolbar: Timestamp, Screenshot, Settings, Fullscreen)
     const rightControls = buttonsRow.createDiv({ cls: "mediascribe-ctrl-group mediascribe-ctrl-right" });
-
-    // Speed Cycle Button (Circular button matching other icon buttons)
-    const speeds = [1.0, 1.25, 1.5, 1.75, 2.0, 0.5, 0.75];
-    let currentSpeedIndex = 0;
-    this.speedBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-speed-btn",
-      attr: { title: "Playback Speed: 1x (Click to cycle)" }
-    });
-    this.speedBtn.setText("1x");
-    this.speedBtn.addEventListener("click", () => {
-      currentSpeedIndex = (currentSpeedIndex + 1) % speeds.length;
-      const speed = speeds[currentSpeedIndex];
-      this.player?.setPlaybackRate(speed);
-      if (this.speedBtn) {
-        this.speedBtn.setText(`${speed}x`);
-        this.speedBtn.setAttribute("title", `Playback Speed: ${speed}x (Click to cycle)`);
-      }
-    });
-
-    // Auto-Pause Typing Scribe Toggle
-    const scribeBtn = rightControls.createEl("button", {
-      cls: `mediascribe-ctrl-btn ${this.typingScribeService.active ? "is-active" : ""}`
-    });
-    setDynamicTooltip(scribeBtn, this.app, "Toggle Auto-Pause While Typing", "mediascribe-toggle-typing-scribe");
-    setIcon(scribeBtn, "pen-tool");
-    scribeBtn.addEventListener("click", () => {
-      const active = this.typingScribeService.toggle();
-      scribeBtn.toggleClass("is-active", active);
-    });
 
     // Insert Timestamp
     const timeBtn = rightControls.createEl("button", {
@@ -1040,6 +1597,20 @@ export class MediaScribeEmbeddedWidget {
       this.timestampService.insertCurrentTimestamp(this.markdownView);
     });
 
+    // Quote Subtitle with Timestamp (ideal for language study & capturing dialogue)
+    const quoteBtn = rightControls.createEl("button", {
+      cls: "mediascribe-ctrl-btn mediascribe-quote-btn"
+    });
+    setDynamicTooltip(quoteBtn, this.app, "Quote Subtitle with Timestamp", "mediascribe-insert-subtitle-quote", "Ctrl+Shift+I");
+    setIcon(quoteBtn, "quote");
+    quoteBtn.addEventListener("click", () => {
+      this.insertCurrentSubtitleQuote();
+    });
+    quoteBtn.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this.showQuoteContextMenu(e);
+    });
+
     // Simple Screenshot Button
     const snapBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn"
@@ -1048,24 +1619,15 @@ export class MediaScribeEmbeddedWidget {
     setIcon(snapBtn, "camera");
     snapBtn.addEventListener("click", () => this.captureScreenshot());
 
-    // On-Screen Subtitles / Captions Toggle (CC)
-    this.transcriptBtn = rightControls.createEl("button", {
-      cls: `mediascribe-ctrl-btn mediascribe-cc-btn ${this.areCaptionsEnabled ? "is-active" : ""}`,
-      attr: { title: "Toggle Video Subtitles (CC)" }
+    // Settings Menu Button (Speed, Auto-Pause, Captions, Audio, A-B Loop)
+    this.settingsBtn = rightControls.createEl("button", {
+      cls: "mediascribe-ctrl-btn mediascribe-settings-btn",
+      attr: { title: "Settings (Speed, Auto-Pause, Captions, Audio, Loop)" }
     });
-    setIcon(this.transcriptBtn, "subtitles");
-    this.transcriptBtn.addEventListener("click", () => {
-      this.toggleCaptions();
-    });
-
-    // A-B Loop Toggle
-    this.loopToggleBtn = rightControls.createEl("button", {
-      cls: `mediascribe-ctrl-btn ${this.isLooping ? "is-active" : ""}`,
-      attr: { title: "A-B Repeat Loop" }
-    });
-    setIcon(this.loopToggleBtn, "repeat");
-    this.loopToggleBtn.addEventListener("click", () => {
-      this.toggleLoop();
+    setIcon(this.settingsBtn, "settings");
+    this.settingsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleSettingsPanel();
     });
 
     // Fullscreen Toggle
@@ -1081,6 +1643,7 @@ export class MediaScribeEmbeddedWidget {
       setIcon(fullscreenBtn, isFs ? "minimize" : "maximize");
       fullscreenBtn.setAttribute("title", isFs ? "Exit Fullscreen" : "Toggle Fullscreen");
       this.hostEl.toggleClass("is-fullscreen", isFs);
+      this.closeSettingsPanel();
 
       if (isFs) {
         this.resetFullscreenIdleTimer();
@@ -1925,6 +2488,200 @@ export class MediaScribeEmbeddedWidget {
     );
   }
 
+  public getCurrentSubtitleItem(toleranceSec: number = 2.5): TranscriptItem | null {
+    const items: TranscriptItem[] = (this.currentTranscriptItems && this.currentTranscriptItems.length > 0)
+      ? this.currentTranscriptItems
+      : (this.transcriptPanel?.getItems() || []);
+
+    if (!items || items.length === 0) return null;
+    const t = this.currentTime;
+
+    // 1. Direct match within start and end
+    const direct = items.find((it: TranscriptItem) => {
+      const end = it.end > it.start ? it.end : it.start + 3.5;
+      return t >= it.start && t <= end;
+    });
+    if (direct) return direct;
+
+    // 2. Tolerance match: paused just after the dialogue line finished
+    const recent = items
+      .filter((it: TranscriptItem) => it.end <= t && t - it.end <= toleranceSec)
+      .sort((a: TranscriptItem, b: TranscriptItem) => b.end - a.end)[0];
+    if (recent) return recent;
+
+    // 3. Fallback: closest item that started before current time if within 4.5s
+    const lastBefore = items
+      .filter((it: TranscriptItem) => it.start <= t)
+      .sort((a: TranscriptItem, b: TranscriptItem) => b.start - a.start)[0];
+    if (lastBefore && (t - lastBefore.start <= 4.5)) {
+      return lastBefore;
+    }
+
+    return null;
+  }
+
+  public async insertCurrentSubtitleQuote(mode?: SubtitleQuoteAction): Promise<void> {
+    const action: SubtitleQuoteAction = mode || this.settings.defaultQuoteAction || "quote";
+    let item = this.getCurrentSubtitleItem();
+
+    // Only attempt auto-extraction if NO subtitle track has ever been loaded/selected
+    const hasAnySubtitlesLoaded = this.activeSubtitleStreamIndex !== null || (this.currentTranscriptItems && this.currentTranscriptItems.length > 0);
+    if (!item && !hasAnySubtitlesLoaded && this.currentTracksResult?.subtitleTracks?.length && this.currentSource) {
+      const fileKey = this.getMediaStorageKey();
+      const savedIndex = this.settings.storedSubtitleTracks?.[fileKey];
+      let subToLoad = (savedIndex !== undefined && savedIndex !== -1)
+        ? this.currentTracksResult.subtitleTracks.find((s) => s.index === savedIndex)
+        : null;
+      if (!subToLoad) {
+        subToLoad = this.currentTracksResult.subtitleTracks.find((s) => s.isDefault) ||
+                    this.currentTracksResult.subtitleTracks.find((s) => s.language === "eng") ||
+                    this.currentTracksResult.subtitleTracks[0];
+      }
+      if (subToLoad) {
+        await this.switchSubtitleTrack(subToLoad, false);
+        item = this.getCurrentSubtitleItem();
+      }
+    }
+
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView) || this.markdownView;
+
+    if (!item) {
+      new Notice("MediaScribe: No subtitle found at current position. Inserting timestamp.");
+      await this.timestampService.insertCurrentTimestamp(activeView);
+      return;
+    }
+
+    const cleanRaw = item.text
+      .replace(/<[^>]*>/g, "")
+      .replace(/\r?\n+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!cleanRaw) {
+      await this.timestampService.insertCurrentTimestamp(activeView);
+      return;
+    }
+
+    // Handle clipboard mode (copies plain raw text)
+    if (action === "clipboard") {
+      await navigator.clipboard.writeText(cleanRaw);
+      const preview = cleanRaw.length > 40 ? `${cleanRaw.slice(0, 40)}...` : cleanRaw;
+      new Notice(`MediaScribe: Copied to clipboard: "${preview}"`);
+      return;
+    }
+
+    // Sanitize and escape any Obsidian syntax ([], #, ^, ::) for inserting into markdown note
+    const cleanText = sanitizeSubtitleForMarkdown(cleanRaw);
+
+    if (!activeView || !activeView.editor) {
+      new Notice(`MediaScribe [${formatSeconds(item.start)}]: ${cleanRaw}`);
+      return;
+    }
+
+    const editor = activeView.editor;
+    const cursor = editor.getCursor();
+    const currentLine = editor.getLine(cursor.line);
+
+    // Handle dialogue_only mode (no timestamp)
+    if (action === "dialogue_only") {
+      let snippet = "";
+      if (currentLine.trim().length === 0) {
+        snippet = `${cleanText}\n\n`;
+        editor.replaceRange(snippet, { line: cursor.line, ch: 0 });
+        editor.setCursor({ line: cursor.line + 2, ch: 0 });
+      } else {
+        editor.replaceSelection(` ${cleanText} `);
+      }
+      const preview = cleanText.length > 40 ? `${cleanText.slice(0, 40)}...` : cleanText;
+      new Notice(`MediaScribe: Inserted dialogue "${preview}"`);
+      return;
+    }
+
+    let formattedTime = "";
+    if (action === "range") {
+      const endTime = item.end > item.start ? item.end : item.start + 3.0;
+      formattedTime = this.timestampService.formatTimestampRange(item.start, endTime);
+    } else {
+      formattedTime = this.timestampService.formatTimestamp(item.start);
+    }
+
+    let snippet = "";
+    if (action === "bullet") {
+      snippet = `- ${formattedTime} ${cleanText}\n`;
+      if (currentLine.trim().length === 0) {
+        editor.replaceRange(snippet, { line: cursor.line, ch: 0 });
+        editor.setCursor({ line: cursor.line + 1, ch: 0 });
+      } else {
+        editor.replaceSelection(`\n${snippet}`);
+      }
+    } else {
+      // Standard blockquote format: > [01:23]() Dialogue text
+      if (currentLine.trim().length === 0) {
+        snippet = `> ${formattedTime} ${cleanText}\n\n`;
+        editor.replaceRange(snippet, { line: cursor.line, ch: 0 });
+        editor.setCursor({ line: cursor.line + 2, ch: 0 });
+      } else {
+        snippet = `\n\n> ${formattedTime} ${cleanText}\n\n`;
+        editor.replaceSelection(snippet);
+      }
+    }
+
+    const preview = cleanText.length > 40 ? `${cleanText.slice(0, 40)}...` : cleanText;
+    new Notice(`MediaScribe: Quoted [${formatSeconds(item.start)}] "${preview}"`);
+  }
+
+  public showQuoteContextMenu(event: MouseEvent): void {
+    const item = this.getCurrentSubtitleItem();
+    if (!item) {
+      new Notice("MediaScribe: No subtitle found at current playback position.");
+      return;
+    }
+
+    const cleanText = item.text.replace(/<[^>]*>/g, "").replace(/\r?\n+/g, " ").replace(/\s+/g, " ").trim();
+    const currentDefault = this.settings.defaultQuoteAction || "quote";
+    const menu = new Menu();
+
+    menu.addItem((it) => {
+      it.setTitle(`Quote Dialogue (> [time] text)${currentDefault === "quote" ? " (Default)" : ""}`)
+        .setIcon("quote")
+        .setChecked(currentDefault === "quote")
+        .onClick(() => this.insertCurrentSubtitleQuote("quote"));
+    });
+
+    menu.addItem((it) => {
+      it.setTitle(`Quote with A-B Loop Range (> [start - end] text)${currentDefault === "range" ? " (Default)" : ""}`)
+        .setIcon("repeat")
+        .setChecked(currentDefault === "range")
+        .onClick(() => this.insertCurrentSubtitleQuote("range"));
+    });
+
+    menu.addItem((it) => {
+      it.setTitle(`Bullet Point (- [time] text)${currentDefault === "bullet" ? " (Default)" : ""}`)
+        .setIcon("list")
+        .setChecked(currentDefault === "bullet")
+        .onClick(() => this.insertCurrentSubtitleQuote("bullet"));
+    });
+
+    menu.addItem((it) => {
+      it.setTitle(`Dialogue Only without Timestamp${currentDefault === "dialogue_only" ? " (Default)" : ""}`)
+        .setIcon("type")
+        .setChecked(currentDefault === "dialogue_only")
+        .onClick(() => this.insertCurrentSubtitleQuote("dialogue_only"));
+    });
+
+    menu.addItem((it) => {
+      it.setTitle(`Copy Subtitle to Clipboard${currentDefault === "clipboard" ? " (Default)" : ""}`)
+        .setIcon("copy")
+        .setChecked(currentDefault === "clipboard")
+        .onClick(async () => {
+          await navigator.clipboard.writeText(cleanText);
+          new Notice("MediaScribe: Subtitle copied to clipboard.");
+        });
+    });
+
+    menu.showAtMouseEvent(event);
+  }
+
   private bindPlayerEvents(): void {
     if (!this.player) return;
 
@@ -2018,9 +2775,20 @@ export class MediaScribeEmbeddedWidget {
       }
     });
 
+    this.player.on("error", (err: any) => {
+      console.warn("[MediaScribe] Player playback error:", err);
+      if (this.currentSource?.isLocal) {
+        new Notice(
+          "MediaScribe: Could not play local media file. If this is an MKV or HEVC video, its audio/video codec may not be supported by Chromium.",
+          8000
+        );
+      }
+    });
+
     this.player.on("ended", () => {
       this.hasEnded = true;
       if (this.currentSource?.videoId) this.completedVideoIds.add(this.currentSource.videoId);
+      if (this.currentSource?.originalInput) this.completedVideoIds.add(this.currentSource.originalInput);
       if (this.currentSource?.url) this.completedVideoIds.add(this.currentSource.url);
       this.updatePlayState(false, true);
       this.saveCurrentPosition(true);
@@ -2068,13 +2836,24 @@ export class MediaScribeEmbeddedWidget {
     this.currentTranscriptItems = [];
 
     try {
-      if (source.isLocal && source.localFile) {
-        const items = await this.transcriptService.loadLocalTranscriptForFile(source.localFile);
-        if (items && items.length > 0) {
-          this.currentTranscriptItems = items;
-          this.transcriptPanel.setItems(items);
-          this.updateCaptions(this.currentTime);
-          return;
+      if (source.isLocal) {
+        if (source.localFile) {
+          const items = await this.transcriptService.loadLocalTranscriptForFile(source.localFile);
+          if (items && items.length > 0) {
+            this.currentTranscriptItems = items;
+            this.transcriptPanel.setItems(items);
+            this.updateCaptions(this.currentTime);
+            return;
+          }
+        }
+        if (source.originalInput) {
+          const items = await this.transcriptService.loadLocalTranscriptFromPath(source.originalInput);
+          if (items && items.length > 0) {
+            this.currentTranscriptItems = items;
+            this.transcriptPanel.setItems(items);
+            this.updateCaptions(this.currentTime);
+            return;
+          }
         }
       }
 
@@ -2139,6 +2918,9 @@ export class MediaScribeEmbeddedWidget {
     if (this.currentSource.url) {
       this.settings.storedPlaybackPositions[this.currentSource.url] = time;
     }
+    if (this.currentSource.originalInput) {
+      this.settings.storedPlaybackPositions[this.currentSource.originalInput] = time;
+    }
     if (this.currentSource.videoId) {
       this.settings.storedPlaybackPositions[this.currentSource.videoId] = time;
     }
@@ -2148,6 +2930,9 @@ export class MediaScribeEmbeddedWidget {
     const now = Date.now();
     if (this.currentSource.url) {
       this.settings.storedPlaybackLastAccessed[this.currentSource.url] = now;
+    }
+    if (this.currentSource.originalInput) {
+      this.settings.storedPlaybackLastAccessed[this.currentSource.originalInput] = now;
     }
     if (this.currentSource.videoId) {
       this.settings.storedPlaybackLastAccessed[this.currentSource.videoId] = now;
@@ -2368,6 +3153,14 @@ export class MediaScribeEmbeddedWidget {
       window.clearTimeout(this.fullscreenIdleTimeout);
       this.fullscreenIdleTimeout = null;
     }
+    if (this.onDocPointerDownHandler) {
+      document.removeEventListener("pointerdown", this.onDocPointerDownHandler, true);
+      this.onDocPointerDownHandler = null;
+    }
+    if (this.settingsPanelEl) {
+      this.settingsPanelEl.remove();
+      this.settingsPanelEl = null;
+    }
     window.removeEventListener("resize", this.onResizeHandler);
     window.removeEventListener("orientationchange", this.onResizeHandler);
     this.saveCurrentPosition();
@@ -2376,6 +3169,7 @@ export class MediaScribeEmbeddedWidget {
       this.player.destroy();
       this.player = null;
     }
+    this.mediaTrackService.cleanupTempFiles();
     this.typingScribeService.setPlayer(null);
     this.markdownView.contentEl.removeClass(
       "mediascribe-dock-vertical",

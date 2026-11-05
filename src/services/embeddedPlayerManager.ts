@@ -1,5 +1,5 @@
 import { App, MarkdownView, Notice, Platform } from "obsidian";
-import { IMediaPlayer, MediaScribeSettings, MediaSourceInfo } from "../types";
+import { IMediaPlayer, MediaScribeSettings, MediaSourceInfo, isSameMediaSource } from "../types";
 import { MediaDetector } from "./mediaDetector";
 import { ScreenshotService } from "./screenshotService";
 import { TimestampService } from "./timestampService";
@@ -156,8 +156,14 @@ export class EmbeddedPlayerManager {
           }
         );
         this.activeWidgets.set(view, widget);
+        await widget.loadMedia(source);
+      } else {
+        const current = widget.getCurrentSource();
+        if (current && isSameMediaSource(current, source)) {
+          return;
+        }
+        await widget.loadMedia(source);
       }
-      await widget.loadMedia(source);
     } else {
       this.dismountView(view);
     }

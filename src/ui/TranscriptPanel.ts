@@ -1,6 +1,6 @@
 import { App, MarkdownView, setIcon } from "obsidian";
 import { IMediaPlayer, TranscriptItem } from "../types";
-import { formatSeconds } from "../utils/time";
+import { formatSeconds, sanitizeSubtitleForMarkdown } from "../utils/time";
 
 export class TranscriptPanel {
   private containerEl: HTMLElement;
@@ -35,6 +35,10 @@ export class TranscriptPanel {
     this.items = items;
     this.applyFilter();
     this.renderList();
+  }
+
+  public getItems(): TranscriptItem[] {
+    return this.items;
   }
 
   public clear(): void {
@@ -209,7 +213,8 @@ export class TranscriptPanel {
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView && activeView.editor) {
       const timeStr = formatSeconds(item.start);
-      const quoteMarkdown = `> [${timeStr}]() ${item.text}\n\n`;
+      const cleanText = sanitizeSubtitleForMarkdown(item.text);
+      const quoteMarkdown = `> [${timeStr}]() ${cleanText}\n\n`;
       activeView.editor.replaceSelection(quoteMarkdown);
     }
   }
@@ -220,7 +225,8 @@ export class TranscriptPanel {
 
     let transcriptMarkdown = `\n### Video Transcript\n\n`;
     for (const item of this.items) {
-      transcriptMarkdown += `- [${formatSeconds(item.start)}]() ${item.text}\n`;
+      const cleanText = sanitizeSubtitleForMarkdown(item.text);
+      transcriptMarkdown += `- [${formatSeconds(item.start)}]() ${cleanText}\n`;
     }
     transcriptMarkdown += `\n`;
 

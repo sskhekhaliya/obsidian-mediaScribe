@@ -54,12 +54,12 @@
   flex-shrink: 0;
 }
 
-/* Minimal Circular Header Buttons */
+/* Minimal Pure Icon Header Buttons (No Background) */
 .mediascribe-btn-icon {
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  border-radius: 50%;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
   width: 26px;
   height: 26px;
   padding: 0;
@@ -68,17 +68,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s ease-in-out;
+  transition: color 0.15s ease, transform 0.15s ease;
 }
 
 .mediascribe-btn-icon:hover {
-  background: var(--background-modifier-hover);
+  background: transparent !important;
   color: var(--text-normal);
-  transform: scale(1.08);
+  transform: scale(1.15);
 }
 
 .mediascribe-btn-icon.is-active {
-  background: transparent;
+  background: transparent !important;
   color: var(--interactive-accent);
 }
 
@@ -723,39 +723,35 @@
 
 /* Minimal Flat YouTube-Style Icon Buttons */
 .mediascribe-ctrl-btn {
-  background: transparent;
-  border: none;
-  border-radius: 50%;
-  width: 32px;
-  height: 32px;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  color: var(--text-normal);
+  color: var(--text-muted);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: color 0.15s ease, transform 0.15s ease;
   position: relative;
 }
 
 .mediascribe-ctrl-btn:hover {
-  background: var(--background-modifier-hover);
+  background: transparent !important;
   color: var(--text-normal);
-  transform: scale(1.08);
+  transform: scale(1.15);
 }
 
 .mediascribe-ctrl-btn.is-active {
+  background: transparent !important;
   color: var(--interactive-accent);
 }
 
 .mediascribe-ctrl-btn.is-active::after {
-  content: "";
-  position: absolute;
-  bottom: 2px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--interactive-accent);
+  display: none !important;
 }
 
 .mediascribe-ctrl-btn svg {
@@ -765,14 +761,15 @@
 
 /* Prominent Play/Pause Button */
 .mediascribe-play-btn {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   color: var(--text-normal);
 }
 
 .mediascribe-play-btn:hover {
-  transform: scale(1.12);
-  background: var(--background-modifier-hover);
+  transform: scale(1.2);
+  background: transparent !important;
+  color: var(--interactive-accent);
 }
 
 .mediascribe-play-btn svg {
@@ -2181,13 +2178,15 @@ body.mediascribe-is-resizing iframe {
 
 .mediascribe-embedded-host:fullscreen .mediascribe-ctrl-btn,
 .mediascribe-embedded-host.is-fullscreen .mediascribe-ctrl-btn {
-  color: #ffffff !important;
+  background: transparent !important;
+  color: rgba(255, 255, 255, 0.85) !important;
 }
 
 .mediascribe-embedded-host:fullscreen .mediascribe-ctrl-btn:hover,
 .mediascribe-embedded-host.is-fullscreen .mediascribe-ctrl-btn:hover {
-  background: rgba(255, 255, 255, 0.2) !important;
+  background: transparent !important;
   color: #ffffff !important;
+  transform: scale(1.15);
 }
 
 .mediascribe-embedded-host:fullscreen .mediascribe-time-display,
@@ -2308,6 +2307,169 @@ body.mediascribe-is-resizing iframe {
 .mediascribe-embedded-host.is-fullscreen.mediascribe-fullscreen-idle .mediascribe-captions-overlay {
   bottom: 36px !important;
   transition: bottom 0.35s ease !important;
+}
+
+/* -------------------------------------------------------------
+   YouTube-Style Translucent Settings Panel (Glassmorphism)
+   ------------------------------------------------------------- */
+.mediascribe-settings-panel {
+  position: absolute;
+  right: 14px;
+  bottom: 50px;
+  z-index: 2500;
+  width: 275px;
+  max-height: 380px;
+  background: rgba(22, 22, 24, 0.9) !important;
+  backdrop-filter: blur(16px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.65) !important;
+  color: #ffffff !important;
+  font-family: var(--font-interface);
+  font-size: 13px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+  animation: mediascribe-settings-fade-in 0.18s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mediascribe-settings-panel.is-hidden {
+  display: none !important;
+}
+
+@keyframes mediascribe-settings-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Fullscreen adjustments for settings panel */
+.mediascribe-embedded-host:fullscreen .mediascribe-settings-panel,
+.mediascribe-embedded-host.is-fullscreen .mediascribe-settings-panel {
+  position: fixed !important;
+  bottom: 84px !important;
+  right: 24px !important;
+  z-index: 1000005 !important;
+  width: 295px !important;
+  max-height: 440px !important;
+  font-size: 14px !important;
+}
+
+.mediascribe-settings-content {
+  overflow-y: auto;
+  max-height: 360px;
+  padding: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+.mediascribe-settings-content::-webkit-scrollbar {
+  width: 5px;
+}
+
+.mediascribe-settings-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+}
+
+/* Header in Submenus */
+.mediascribe-settings-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-weight: 600;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.9);
+  transition: color 0.15s ease;
+}
+
+.mediascribe-settings-header:hover {
+  color: #ffffff;
+}
+
+.mediascribe-settings-header svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Menu Item Row */
+.mediascribe-settings-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.mediascribe-settings-item:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+}
+
+.mediascribe-settings-item.is-selected {
+  color: #ffffff !important;
+  font-weight: 600;
+}
+
+.mediascribe-settings-item-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mediascribe-settings-item-left svg {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.mediascribe-settings-item-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mediascribe-settings-item-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.mediascribe-settings-item-right svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mediascribe-settings-item-check {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--interactive-accent);
+}
+
+.mediascribe-settings-item-check svg {
+  width: 16px;
+  height: 16px;
 }
 
 

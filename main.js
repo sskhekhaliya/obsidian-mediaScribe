@@ -26,6 +26,27 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian16 = require("obsidian");
 
 // src/types/index.ts
+function isSameMediaSource(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.videoId && b.videoId && a.videoId === b.videoId) {
+    return true;
+  }
+  if (a.localFile && b.localFile && a.localFile.path === b.localFile.path) {
+    return true;
+  }
+  if (a.originalInput && b.originalInput && a.originalInput.trim() === b.originalInput.trim()) {
+    return true;
+  }
+  if (a.url && b.url) {
+    const cleanA = a.url.split("?")[0].trim().toLowerCase();
+    const cleanB = b.url.split("?")[0].trim().toLowerCase();
+    if (cleanA && cleanA === cleanB) {
+      return true;
+    }
+  }
+  return false;
+}
 var DEFAULT_SETTINGS = {
   autoEmbedInNote: true,
   verifyMediaContentType: true,
@@ -58,6 +79,9 @@ var DEFAULT_SETTINGS = {
   mediaPropertyNames: ["media_link", "video_link", "media", "video", "url", "youtube"],
   enableAmbientMode: true,
   enableCaptions: false,
+  storedAudioTracks: {},
+  storedSubtitleTracks: {},
+  defaultQuoteAction: "quote",
   playlistNoteProperty: "video_link",
   playlistNoteFolderLocation: "current_folder",
   playlistNoteSpecificFolder: "",
@@ -210,6 +234,12 @@ var MediaScribeSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("Always Include Hours").setDesc("Format timestamps as 00:01:23 instead of 01:23 when hours are zero.").addToggle((toggle) => {
       toggle.setValue(!this.plugin.settings.includeTimestampLeadingZero).onChange(async (val) => {
         this.plugin.settings.includeTimestampLeadingZero = !val;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian2.Setting(containerEl).setName("Default Subtitle Quote Action").setDesc("Choose the default behavior when clicking the Quote button on the player toolbar or triggering the default quote hotkey.").addDropdown((drop) => {
+      drop.addOption("quote", "Quote Dialogue (> [time] text)").addOption("range", "Quote with A-B Loop Range (> [start - end] text)").addOption("bullet", "Bullet Point (- [time] text)").addOption("dialogue_only", "Dialogue Only without Timestamp").addOption("clipboard", "Copy Subtitle to Clipboard").setValue(this.plugin.settings.defaultQuoteAction || "quote").onChange(async (val) => {
+        this.plugin.settings.defaultQuoteAction = val;
         await this.plugin.saveSettings();
       });
     });
@@ -531,7 +561,12 @@ function extractTimestampsFromText(text) {
     }
     charOffset += line.length + 1;
   }
-  return results.sort((a, b) => a.timeSeconds - b.timeSeconds);
+  return results.sort((a, b) => a.index - b.index);
+}
+function sanitizeSubtitleForMarkdown(text) {
+  if (!text) return "";
+  let clean = text.replace(/<[^>]*>/g, "").replace(/\r?\n+/g, " ").replace(/\s+/g, " ").trim();
+  return clean.replace(/(?<!\\)\[/g, "\\[").replace(/(?<!\\)\]/g, "\\]").replace(/(?<!\\)#/g, "\\#").replace(/(?<!\\)\^/g, "\\^").replace(/::/g, "\\::");
 }
 
 // src/services/mediaDetector.ts
@@ -563,12 +598,20 @@ var MediaDetector = class {
     if (mdLinkMatch) {
       clean = mdLinkMatch[1].trim();
     }
+    if (clean.startsWith('"') && clean.endsWith('"') || clean.startsWith("'") && clean.endsWith("'")) {
+      clean = clean.slice(1, -1).trim();
+    }
+    if (clean.startsWith("<") && clean.endsWith(">")) {
+      clean = clean.slice(1, -1).trim();
+    }
     const ytInfo = this.checkYouTube(clean);
     if (ytInfo) return ytInfo;
     const vimeoInfo = this.checkVimeo(clean);
     if (vimeoInfo) return vimeoInfo;
     const vaultFileInfo = this.checkVaultFile(clean, sourcePath);
     if (vaultFileInfo) return vaultFileInfo;
+    const localMediaInfo = this.checkLocalMedia(clean, input);
+    if (localMediaInfo) return localMediaInfo;
     const webMediaInfo = this.checkWebMedia(clean);
     if (webMediaInfo) return webMediaInfo;
     const cached = this.probeCache.get(clean);
@@ -615,17 +658,15 @@ var MediaDetector = class {
         };
       }
     }
-    if (clean.startsWith("file://")) {
-      const directInfo = this.checkWebMedia(clean);
-      if (directInfo) return directInfo;
-      if (!verifyContentType) {
-        return {
-          type: "html5_video",
-          url: clean,
-          originalInput: input,
-          isLocal: true
-        };
-      }
+    if (clean.startsWith("file://") || /^[a-zA-Z]:[/\\]/.test(clean) || /^\/[^\/]/.test(clean)) {
+      const resourceUrl = this.getLocalResourceUrl(clean);
+      return {
+        type: "html5_video",
+        url: resourceUrl,
+        originalInput: input,
+        title: this.extractFileNameTitle(clean),
+        isLocal: true
+      };
     }
     return null;
   }
@@ -802,6 +843,153 @@ var MediaDetector = class {
     }
     return null;
   }
+  /**
+   * Checks for local filesystem paths (e.g. C:\..., /Users/..., file://..., \\server\...)
+   * and maps them to an Obsidian app:// local resource URL.
+   */
+  checkLocalMedia(input, originalInput) {
+    const videoExts = [
+      ".mp4",
+      ".webm",
+      ".mkv",
+      ".mov",
+      ".m4v",
+      ".ogv",
+      ".avi",
+      ".ts",
+      ".3gp",
+      ".wmv",
+      ".asf",
+      ".m3u8",
+      ".mpd"
+    ];
+    const audioExts = [
+      ".mp3",
+      ".m4a",
+      ".wav",
+      ".ogg",
+      ".flac",
+      ".aac",
+      ".opus",
+      ".weba",
+      ".oga",
+      ".mid",
+      ".midi",
+      ".wma",
+      ".aiff",
+      ".caf"
+    ];
+    let clean = input.trim();
+    if (clean.startsWith('"') && clean.endsWith('"') || clean.startsWith("'") && clean.endsWith("'")) {
+      clean = clean.slice(1, -1).trim();
+    }
+    if (clean.startsWith("<") && clean.endsWith(">")) {
+      clean = clean.slice(1, -1).trim();
+    }
+    const isFileUrl = clean.toLowerCase().startsWith("file://");
+    const isWindowsDrive = /^[a-zA-Z]:[/\\]/.test(clean);
+    const isPosixAbsolute = /^\/[^\/]/.test(clean);
+    const isUnc = /^\\\\/.test(clean);
+    if (!isFileUrl && !isWindowsDrive && !isPosixAbsolute && !isUnc) {
+      return null;
+    }
+    let pathForExt = clean;
+    if (isFileUrl) {
+      try {
+        const u = new URL(clean);
+        pathForExt = decodeURIComponent(u.pathname);
+      } catch {
+        pathForExt = clean.split(/[?#]/)[0];
+      }
+    } else {
+      pathForExt = clean.split(/[?#]/)[0];
+    }
+    const lowerPath = pathForExt.toLowerCase();
+    const isVideo = videoExts.some((ext) => lowerPath.endsWith(ext));
+    const isAudio = !isVideo && audioExts.some((ext) => lowerPath.endsWith(ext));
+    if (!isVideo && !isAudio) {
+      return null;
+    }
+    let initialTime;
+    const tMatch = clean.match(/[?&#](?:t|start)=([^&#]+)/i);
+    if (tMatch && tMatch[1]) {
+      const parsed = parseTimestamp(tMatch[1], true);
+      if (parsed !== null) initialTime = parsed;
+    }
+    const title = this.extractFileNameTitle(pathForExt);
+    const resourceUrl = this.getLocalResourceUrl(clean);
+    return {
+      type: isVideo ? "html5_video" : "html5_audio",
+      url: resourceUrl,
+      originalInput: originalInput || input,
+      title,
+      initialTime,
+      isLocal: true
+    };
+  }
+  /**
+   * Extracts clean file title without extension from a path
+   */
+  extractFileNameTitle(filePath) {
+    const raw = filePath.split(/[?#]/)[0];
+    const parts = raw.replace(/\\/g, "/").split("/");
+    const filename = parts[parts.length - 1] || "";
+    const lastDot = filename.lastIndexOf(".");
+    if (lastDot > 0) {
+      return filename.substring(0, lastDot);
+    }
+    return filename || "Local Media";
+  }
+  /**
+   * Converts a local filesystem path (or file:// URL) into an Obsidian resource URL
+   * that can be safely loaded by HTML5 <video> / <audio> in Obsidian's Electron sandbox.
+   */
+  getLocalResourceUrl(filePath) {
+    let clean = filePath.trim();
+    if (clean.startsWith('"') && clean.endsWith('"') || clean.startsWith("'") && clean.endsWith("'")) {
+      clean = clean.slice(1, -1).trim();
+    }
+    if (clean.startsWith("<") && clean.endsWith(">")) {
+      clean = clean.slice(1, -1).trim();
+    }
+    const [pathOnly] = clean.split(/[?#]/);
+    let fsPath = pathOnly;
+    if (fsPath.toLowerCase().startsWith("file:///")) {
+      fsPath = decodeURIComponent(fsPath.slice(8));
+      if (!/^[a-zA-Z]:/.test(fsPath) && !fsPath.startsWith("/")) {
+        fsPath = "/" + fsPath;
+      }
+    } else if (fsPath.toLowerCase().startsWith("file://")) {
+      fsPath = decodeURIComponent(fsPath.slice(7));
+    }
+    fsPath = fsPath.replace(/\\\\/g, "\\");
+    try {
+      const adapter = this.app.vault.adapter;
+      if (adapter && typeof adapter.getResourcePath === "function") {
+        const res = adapter.getResourcePath("file:" + fsPath);
+        if (res && typeof res === "string") {
+          return res;
+        }
+      }
+    } catch {
+    }
+    try {
+      const adapter = this.app.vault.adapter;
+      if (adapter && adapter.resourcePathPrefix) {
+        let normalized2 = fsPath.replace(/\\/g, "/");
+        if (normalized2.startsWith("/")) {
+          normalized2 = normalized2.slice(1);
+        }
+        return `${adapter.resourcePathPrefix}${encodeURI(normalized2)}?${Date.now()}`;
+      }
+    } catch {
+    }
+    let normalized = fsPath.replace(/\\/g, "/");
+    if (normalized.startsWith("/")) {
+      normalized = normalized.slice(1);
+    }
+    return `app://local/${encodeURI(normalized)}`;
+  }
   checkWebMedia(input) {
     const videoExts = [
       ".mp4",
@@ -835,57 +1023,28 @@ var MediaDetector = class {
       ".caf"
     ];
     try {
-      let pathname = "";
-      let isFileUrl = false;
-      if (input.startsWith("file://")) {
+      if (input.startsWith("http://") || input.startsWith("https://")) {
         const url = new URL(input);
-        pathname = decodeURIComponent(url.pathname).toLowerCase();
-        isFileUrl = true;
-      } else if (input.startsWith("http://") || input.startsWith("https://")) {
-        const url = new URL(input);
-        pathname = decodeURIComponent(url.pathname).toLowerCase();
-      } else {
-        const stripped = input.split(/[?#]/)[0].toLowerCase();
+        const pathname = decodeURIComponent(url.pathname).toLowerCase();
         for (const ext of videoExts) {
-          if (stripped.endsWith(ext)) {
+          if (pathname.endsWith(ext)) {
             return {
               type: "html5_video",
               url: input,
               originalInput: input,
-              isLocal: true
+              isLocal: false
             };
           }
         }
         for (const ext of audioExts) {
-          if (stripped.endsWith(ext)) {
+          if (pathname.endsWith(ext)) {
             return {
               type: "html5_audio",
               url: input,
               originalInput: input,
-              isLocal: true
+              isLocal: false
             };
           }
-        }
-        return null;
-      }
-      for (const ext of videoExts) {
-        if (pathname.endsWith(ext)) {
-          return {
-            type: "html5_video",
-            url: input,
-            originalInput: input,
-            isLocal: isFileUrl
-          };
-        }
-      }
-      for (const ext of audioExts) {
-        if (pathname.endsWith(ext)) {
-          return {
-            type: "html5_audio",
-            url: input,
-            originalInput: input,
-            isLocal: isFileUrl
-          };
         }
       }
     } catch {
@@ -1177,6 +1336,40 @@ var TimestampService = class {
       case "bracket":
       default:
         return `[${formattedTime}]()`;
+    }
+  }
+  /**
+   * Format a range of seconds (e.g. start - end) into timestamp link according to settings
+   */
+  formatTimestampRange(startSec, endSec) {
+    const sStr = formatSeconds(startSec, !this.settings.includeTimestampLeadingZero);
+    const eStr = formatSeconds(endSec, !this.settings.includeTimestampLeadingZero);
+    const rangeDisplay = `${sStr} - ${eStr}`;
+    const startInt = Math.floor(startSec);
+    switch (this.settings.timestampFormat) {
+      case "full_url_link": {
+        const source = this.sourceGetter ? this.sourceGetter() : null;
+        if (source) {
+          if (source.type === "youtube" && source.videoId) {
+            return `[${rangeDisplay}](https://youtu.be/${source.videoId}?t=${startInt})`;
+          }
+          if (source.isLocal && source.localFile) {
+            return `[${rangeDisplay}](${encodeURI(source.localFile.name)}#t=${startInt})`;
+          }
+          if (source.url && (source.url.startsWith("http://") || source.url.startsWith("https://"))) {
+            const separator = source.url.includes("?") ? "&" : "?";
+            return `[${rangeDisplay}](${source.url}${separator}t=${startInt})`;
+          }
+        }
+        return `[${rangeDisplay}](#t=${startInt})`;
+      }
+      case "markdown_link":
+        return `[${rangeDisplay}](#t=${startInt})`;
+      case "wikilink":
+        return `[[#t=${startInt}|${rangeDisplay}]]`;
+      case "bracket":
+      default:
+        return `[${rangeDisplay}]()`;
     }
   }
   /**
@@ -1546,6 +1739,49 @@ var TranscriptService = class {
           return this.parseSRT(content);
         }
       }
+    }
+    return null;
+  }
+  /**
+   * Tries to find and load local SRT or VTT file on the filesystem for a given absolute file path
+   */
+  async loadLocalTranscriptFromPath(filePath) {
+    try {
+      let clean = filePath.trim();
+      if (clean.startsWith('"') && clean.endsWith('"') || clean.startsWith("'") && clean.endsWith("'")) {
+        clean = clean.slice(1, -1).trim();
+      }
+      if (clean.toLowerCase().startsWith("file:///")) {
+        clean = decodeURIComponent(clean.slice(8));
+        if (!/^[a-zA-Z]:/.test(clean) && !clean.startsWith("/")) clean = "/" + clean;
+      }
+      clean = clean.replace(/\\\\/g, "\\");
+      const rawPath = clean.split(/[?#]/)[0];
+      const lastDot = rawPath.lastIndexOf(".");
+      const basePath = lastDot > 0 ? rawPath.substring(0, lastDot) : rawPath;
+      const fs = window.require ? window.require("fs") : null;
+      if (fs && typeof fs.existsSync === "function") {
+        const candidates = [
+          `${basePath}.srt`,
+          `${basePath}.vtt`,
+          `${basePath}.en.srt`,
+          `${basePath}.en.vtt`,
+          `${basePath}.hi.srt`,
+          `${basePath}.hi.vtt`
+        ];
+        for (const candidate of candidates) {
+          if (fs.existsSync(candidate)) {
+            const content = fs.readFileSync(candidate, "utf8");
+            if (candidate.toLowerCase().endsWith(".vtt")) {
+              return this.parseVTT(content);
+            } else {
+              return this.parseSRT(content);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[MediaScribe] Failed to load disk subtitle file:", err);
     }
     return null;
   }
@@ -2356,6 +2592,7 @@ var HTML5Player = class extends BasePlayer {
   constructor(url, isAudioOnly = false, initialTime = 0) {
     super();
     this.mediaEl = null;
+    this.secondaryAudioEl = null;
     this.centerOverlayEl = null;
     this.centerPlayBtn = null;
     this._hasEnded = false;
@@ -2455,6 +2692,10 @@ var HTML5Player = class extends BasePlayer {
     media.addEventListener("play", () => {
       this._isPlaying = true;
       this._hasEnded = false;
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.play().catch(() => {
+        });
+      }
       if (this.centerOverlayEl) {
         this.centerOverlayEl.addClass("is-playing");
       }
@@ -2467,12 +2708,23 @@ var HTML5Player = class extends BasePlayer {
     });
     media.addEventListener("pause", () => {
       this._isPlaying = false;
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.pause();
+      }
       if (this.centerOverlayEl) {
         this.centerOverlayEl.removeClass("is-playing");
       }
       this.emit("pause");
     });
+    media.addEventListener("seeking", () => {
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.currentTime = media.currentTime;
+      }
+    });
     media.addEventListener("timeupdate", () => {
+      if (this.secondaryAudioEl && Math.abs(this.secondaryAudioEl.currentTime - media.currentTime) > 0.25) {
+        this.secondaryAudioEl.currentTime = media.currentTime;
+      }
       this.emit("timeupdate", media.currentTime || 0);
       notifyDuration();
     });
@@ -2503,8 +2755,13 @@ var HTML5Player = class extends BasePlayer {
         if (this._hasEnded || this.mediaEl.ended || this.mediaEl.duration && this.mediaEl.currentTime >= this.mediaEl.duration - 0.5) {
           this._hasEnded = false;
           this.mediaEl.currentTime = 0;
+          if (this.secondaryAudioEl) this.secondaryAudioEl.currentTime = 0;
         }
         await this.mediaEl.play();
+        if (this.secondaryAudioEl) {
+          await this.secondaryAudioEl.play().catch(() => {
+          });
+        }
         this._isPlaying = true;
       } catch (err) {
         console.warn("[MediaScribe] Autoplay or play blocked:", err);
@@ -2514,6 +2771,9 @@ var HTML5Player = class extends BasePlayer {
   async pause() {
     if (this.mediaEl) {
       this.mediaEl.pause();
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.pause();
+      }
       this._isPlaying = false;
     }
   }
@@ -2529,6 +2789,9 @@ var HTML5Player = class extends BasePlayer {
     if (this.mediaEl) {
       this._hasEnded = false;
       this.mediaEl.currentTime = Math.max(0, seconds);
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.currentTime = Math.max(0, seconds);
+      }
       this.emit("timeupdate", this.mediaEl.currentTime);
     }
   }
@@ -2541,6 +2804,9 @@ var HTML5Player = class extends BasePlayer {
   setPlaybackRate(rate) {
     if (this.mediaEl) {
       this.mediaEl.playbackRate = rate;
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.playbackRate = rate;
+      }
     }
   }
   async getPlaybackRate() {
@@ -2548,11 +2814,60 @@ var HTML5Player = class extends BasePlayer {
   }
   setVolume(volume) {
     if (this.mediaEl) {
-      this.mediaEl.volume = Math.max(0, Math.min(100, volume)) / 100;
+      const vol = Math.max(0, Math.min(100, volume)) / 100;
+      this.mediaEl.volume = vol;
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.volume = vol;
+      }
     }
   }
   async getVolume() {
     return (this.mediaEl?.volume || 1) * 100;
+  }
+  setSecondaryAudio(url) {
+    if (!url) {
+      if (this.secondaryAudioEl) {
+        this.secondaryAudioEl.pause();
+        this.secondaryAudioEl.src = "";
+        this.secondaryAudioEl.remove();
+        this.secondaryAudioEl = null;
+      }
+      if (this.mediaEl) {
+        this.mediaEl.muted = false;
+      }
+      return;
+    }
+    if (!this.secondaryAudioEl) {
+      this.secondaryAudioEl = document.createElement("audio");
+      this.secondaryAudioEl.style.display = "none";
+      this.secondaryAudioEl.preload = "auto";
+      this.containerEl?.appendChild(this.secondaryAudioEl);
+    }
+    if (this.mediaEl) {
+      this.mediaEl.muted = true;
+    }
+    const targetTime = this.mediaEl?.currentTime || 0;
+    const currentRate = this.mediaEl?.playbackRate || 1;
+    const currentVol = this.mediaEl?.volume ?? 1;
+    this.secondaryAudioEl.src = url;
+    this.secondaryAudioEl.playbackRate = currentRate;
+    this.secondaryAudioEl.volume = currentVol;
+    const syncStartTime = () => {
+      if (this.secondaryAudioEl && this.mediaEl) {
+        const cur = this.mediaEl.currentTime || targetTime;
+        this.secondaryAudioEl.currentTime = cur;
+        if (this._isPlaying && !this.mediaEl.paused) {
+          this.secondaryAudioEl.play().catch(() => {
+          });
+        }
+      }
+    };
+    if (this.secondaryAudioEl.readyState >= 1) {
+      syncStartTime();
+    } else {
+      this.secondaryAudioEl.addEventListener("loadedmetadata", syncStartTime, { once: true });
+      this.secondaryAudioEl.addEventListener("canplay", syncStartTime, { once: true });
+    }
   }
   async requestPictureInPicture() {
     if (this.mediaEl instanceof HTMLVideoElement) {
@@ -2618,6 +2933,12 @@ var HTML5Player = class extends BasePlayer {
     return null;
   }
   destroy() {
+    if (this.secondaryAudioEl) {
+      this.secondaryAudioEl.pause();
+      this.secondaryAudioEl.src = "";
+      this.secondaryAudioEl.remove();
+      this.secondaryAudioEl = null;
+    }
     if (this.centerOverlayEl) {
       this.centerOverlayEl.remove();
       this.centerOverlayEl = null;
@@ -2795,6 +3116,329 @@ var AmbientGlowService = class {
   }
 };
 
+// src/services/mediaTrackService.ts
+var LANGUAGE_NAMES = {
+  hin: "Hindi",
+  eng: "English",
+  spa: "Spanish",
+  fre: "French",
+  fra: "French",
+  ger: "German",
+  deu: "German",
+  ita: "Italian",
+  jpn: "Japanese",
+  kor: "Korean",
+  chi: "Chinese",
+  zho: "Chinese",
+  ara: "Arabic",
+  por: "Portuguese",
+  rus: "Russian",
+  tam: "Tamil",
+  tel: "Telugu",
+  mal: "Malayalam",
+  kan: "Kannada",
+  tur: "Turkish",
+  pol: "Polish",
+  dut: "Dutch",
+  nld: "Dutch",
+  swe: "Swedish",
+  dan: "Danish",
+  fin: "Finnish",
+  nob: "Norwegian",
+  nor: "Norwegian",
+  cze: "Czech",
+  ces: "Czech",
+  hun: "Hungarian",
+  rum: "Romanian",
+  ron: "Romanian",
+  ind: "Indonesian",
+  tha: "Thai",
+  ben: "Bengali",
+  guj: "Gujarati",
+  mar: "Marathi",
+  pan: "Punjabi",
+  urd: "Urdu",
+  ukr: "Ukrainian",
+  vie: "Vietnamese",
+  heb: "Hebrew",
+  glg: "Galician",
+  gre: "Greek",
+  ell: "Greek"
+};
+var MediaTrackService = class {
+  constructor(app) {
+    this.isFFmpegAvailable = null;
+    this.tracksCache = /* @__PURE__ */ new Map();
+    this.vttCache = /* @__PURE__ */ new Map();
+    this.audioCache = /* @__PURE__ */ new Map();
+    this.createdTempFiles = /* @__PURE__ */ new Set();
+    this.app = app;
+  }
+  /**
+   * Checks if ffprobe / ffmpeg are accessible on the host system.
+   */
+  async checkAvailability() {
+    if (this.isFFmpegAvailable !== null) {
+      return this.isFFmpegAvailable;
+    }
+    try {
+      const childProcess = this.getChildProcess();
+      if (!childProcess) {
+        this.isFFmpegAvailable = false;
+        return false;
+      }
+      const available = await new Promise((resolve) => {
+        childProcess.execFile("ffprobe", ["-version"], { timeout: 3e3 }, (err) => {
+          resolve(!err);
+        });
+      });
+      this.isFFmpegAvailable = available;
+      return available;
+    } catch {
+      this.isFFmpegAvailable = false;
+      return false;
+    }
+  }
+  /**
+   * Inspects a video container to list all embedded audio and subtitle streams.
+   */
+  async probeTracks(filePath) {
+    const cleanPath = this.normalizeFsPath(filePath);
+    if (!cleanPath) return null;
+    if (this.tracksCache.has(cleanPath)) {
+      return this.tracksCache.get(cleanPath);
+    }
+    const isAvailable = await this.checkAvailability();
+    if (!isAvailable) return null;
+    const childProcess = this.getChildProcess();
+    if (!childProcess) return null;
+    try {
+      const stdout = await new Promise((resolve, reject) => {
+        childProcess.execFile(
+          "ffprobe",
+          [
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=index,codec_type,codec_name:stream_tags=language,title",
+            "-of",
+            "json",
+            cleanPath
+          ],
+          { maxBuffer: 10 * 1024 * 1024, timeout: 8e3 },
+          (err, out) => {
+            if (err) reject(err);
+            else resolve(out);
+          }
+        );
+      });
+      const parsed = JSON.parse(stdout);
+      if (!parsed || !Array.isArray(parsed.streams)) {
+        return null;
+      }
+      const audioTracks = [];
+      const subtitleTracks = [];
+      let audioCount = 0;
+      let subCount = 0;
+      for (const s of parsed.streams) {
+        const index = s.index;
+        const codec = s.codec_name || "";
+        const langCode = (s.tags?.language || "").toLowerCase().trim();
+        const customTitle = s.tags?.title || "";
+        const friendlyLang = LANGUAGE_NAMES[langCode] || (langCode ? langCode.toUpperCase() : "");
+        if (s.codec_type === "audio") {
+          const isDefault = audioCount === 0;
+          const label = friendlyLang ? `${friendlyLang}${customTitle && customTitle !== friendlyLang ? ` (${customTitle})` : ""}` : customTitle || `Track ${audioCount + 1}`;
+          audioTracks.push({
+            index,
+            audioIndex: audioCount,
+            codec,
+            language: langCode || "und",
+            languageLabel: label,
+            title: customTitle,
+            isDefault
+          });
+          audioCount++;
+        } else if (s.codec_type === "subtitle") {
+          const isDefault = subCount === 0;
+          const label = friendlyLang ? `${friendlyLang}${customTitle && customTitle !== friendlyLang ? ` (${customTitle})` : ""}` : customTitle || `Sub ${subCount + 1}`;
+          subtitleTracks.push({
+            index,
+            subIndex: subCount,
+            codec,
+            language: langCode || "und",
+            languageLabel: label,
+            title: customTitle,
+            isDefault
+          });
+          subCount++;
+        }
+      }
+      const result = {
+        filePath: cleanPath,
+        audioTracks,
+        subtitleTracks
+      };
+      this.tracksCache.set(cleanPath, result);
+      return result;
+    } catch (err) {
+      console.warn("[MediaScribe] ffprobe track inspection failed:", err);
+      return null;
+    }
+  }
+  /**
+   * Extracts a single embedded subtitle track directly into WebVTT format string.
+   */
+  async extractSubtitleVTT(filePath, streamIndex) {
+    const cleanPath = this.normalizeFsPath(filePath);
+    if (!cleanPath) return null;
+    const cacheKey = `${cleanPath}_sub_${streamIndex}`;
+    if (this.vttCache.has(cacheKey)) {
+      return this.vttCache.get(cacheKey);
+    }
+    const childProcess = this.getChildProcess();
+    if (!childProcess) return null;
+    try {
+      const vttContent = await new Promise((resolve, reject) => {
+        childProcess.execFile(
+          "ffmpeg",
+          ["-v", "error", "-i", cleanPath, "-map", `0:${streamIndex}`, "-f", "webvtt", "-"],
+          { maxBuffer: 15 * 1024 * 1024, timeout: 15e3 },
+          (err, stdout) => {
+            if (err) reject(err);
+            else resolve(stdout);
+          }
+        );
+      });
+      if (vttContent && vttContent.includes("WEBVTT")) {
+        this.vttCache.set(cacheKey, vttContent);
+        return vttContent;
+      }
+      return null;
+    } catch (err) {
+      console.warn(`[MediaScribe] Failed to extract subtitle stream ${streamIndex}:`, err);
+      return null;
+    }
+  }
+  /**
+   * Extracts an embedded audio track into a lossless temporary audio file (.m4a)
+   * and returns an Obsidian app:// local resource URL.
+   */
+  async extractAudioTrack(filePath, streamIndex) {
+    const cleanPath = this.normalizeFsPath(filePath);
+    if (!cleanPath) return null;
+    const cacheKey = `${cleanPath}_audio_${streamIndex}`;
+    if (this.audioCache.has(cacheKey)) {
+      return this.audioCache.get(cacheKey);
+    }
+    const childProcess = this.getChildProcess();
+    const os = this.getOsModule();
+    const path = this.getPathModule();
+    const fs = this.getFsModule();
+    if (!childProcess || !os || !path || !fs) return null;
+    try {
+      const hash = this.simpleHash(cleanPath);
+      const tempPath = path.join(os.tmpdir(), `mediascribe_audio_${hash}_s${streamIndex}.m4a`);
+      if (!fs.existsSync(tempPath) || fs.statSync(tempPath).size === 0) {
+        await new Promise((resolve, reject) => {
+          childProcess.execFile(
+            "ffmpeg",
+            ["-v", "error", "-y", "-i", cleanPath, "-map", `0:${streamIndex}`, "-c:a", "copy", tempPath],
+            { timeout: 2e4 },
+            (err) => {
+              if (err) reject(err);
+              else resolve();
+            }
+          );
+        });
+      }
+      this.createdTempFiles.add(tempPath);
+      let resourceUrl = "";
+      try {
+        const adapter = this.app.vault.adapter;
+        if (adapter && typeof adapter.getResourcePath === "function") {
+          resourceUrl = adapter.getResourcePath("file:" + tempPath);
+        }
+      } catch {
+      }
+      if (!resourceUrl) {
+        const normalized = tempPath.replace(/\\/g, "/");
+        resourceUrl = `app://local/${encodeURI(normalized.startsWith("/") ? normalized.slice(1) : normalized)}`;
+      }
+      this.audioCache.set(cacheKey, resourceUrl);
+      return resourceUrl;
+    } catch (err) {
+      console.warn(`[MediaScribe] Failed to extract audio stream ${streamIndex}:`, err);
+      return null;
+    }
+  }
+  /**
+   * Cleans up temporary audio files generated during playback
+   */
+  cleanupTempFiles() {
+    const fs = this.getFsModule();
+    if (!fs) return;
+    for (const tempPath of this.createdTempFiles) {
+      try {
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+        }
+      } catch {
+      }
+    }
+    this.createdTempFiles.clear();
+    this.audioCache.clear();
+  }
+  normalizeFsPath(filePath) {
+    let clean = filePath.trim();
+    if (clean.startsWith('"') && clean.endsWith('"') || clean.startsWith("'") && clean.endsWith("'")) {
+      clean = clean.slice(1, -1).trim();
+    }
+    if (clean.toLowerCase().startsWith("file:///")) {
+      clean = decodeURIComponent(clean.slice(8));
+      if (!/^[a-zA-Z]:/.test(clean) && !clean.startsWith("/")) clean = "/" + clean;
+    }
+    clean = clean.replace(/\\\\/g, "\\");
+    return clean.split(/[?#]/)[0];
+  }
+  simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = (hash << 5) - hash + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return Math.abs(hash).toString(36);
+  }
+  getChildProcess() {
+    try {
+      return window.require ? window.require("child_process") : null;
+    } catch {
+      return null;
+    }
+  }
+  getOsModule() {
+    try {
+      return window.require ? window.require("os") : null;
+    } catch {
+      return null;
+    }
+  }
+  getPathModule() {
+    try {
+      return window.require ? window.require("path") : null;
+    } catch {
+      return null;
+    }
+  }
+  getFsModule() {
+    try {
+      return window.require ? window.require("fs") : null;
+    } catch {
+      return null;
+    }
+  }
+};
+
 // src/ui/TranscriptPanel.ts
 var import_obsidian11 = require("obsidian");
 var TranscriptPanel = class {
@@ -2820,6 +3464,9 @@ var TranscriptPanel = class {
     this.items = items;
     this.applyFilter();
     this.renderList();
+  }
+  getItems() {
+    return this.items;
   }
   clear() {
     this.items = [];
@@ -2956,7 +3603,8 @@ var TranscriptPanel = class {
     const activeView = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
     if (activeView && activeView.editor) {
       const timeStr = formatSeconds(item.start);
-      const quoteMarkdown = `> [${timeStr}]() ${item.text}
+      const cleanText = sanitizeSubtitleForMarkdown(item.text);
+      const quoteMarkdown = `> [${timeStr}]() ${cleanText}
 
 `;
       activeView.editor.replaceSelection(quoteMarkdown);
@@ -2970,7 +3618,8 @@ var TranscriptPanel = class {
 
 `;
     for (const item of this.items) {
-      transcriptMarkdown += `- [${formatSeconds(item.start)}]() ${item.text}
+      const cleanText = sanitizeSubtitleForMarkdown(item.text);
+      transcriptMarkdown += `- [${formatSeconds(item.start)}]() ${cleanText}
 `;
     }
     transcriptMarkdown += `
@@ -3131,6 +3780,11 @@ var MediaScribeEmbeddedWidget = class {
     this.nextVideoBtn = null;
     this.playlistDrawerAutoplaySwitch = null;
     this.speedBtn = null;
+    this.settingsBtn = null;
+    this.settingsPanelEl = null;
+    this.activeSettingsTab = "main";
+    this.onDocPointerDownHandler = null;
+    this.currentPlaybackRate = 1;
     // State
     this.currentTime = 0;
     this.duration = 0;
@@ -3166,6 +3820,10 @@ var MediaScribeEmbeddedWidget = class {
     this.captionsOverlayEl = null;
     this.captionsTextEl = null;
     this.currentCaptionText = "";
+    this.currentTracksResult = null;
+    this.activeAudioStreamIndex = null;
+    this.activeSubtitleStreamIndex = null;
+    this.trackSelectBtn = null;
     this.posBtn = null;
     this.lastAppliedPosition = "top";
     this.onFullscreenChangeHandler = null;
@@ -3180,6 +3838,9 @@ var MediaScribeEmbeddedWidget = class {
           this.applyPositionStyles();
         }
       }
+      if (this.settingsPanelEl && !this.settingsPanelEl.hasClass("is-hidden")) {
+        this.updateSettingsPanelPosition();
+      }
     };
     this.plugin = plugin;
     this.markdownView = markdownView;
@@ -3189,6 +3850,7 @@ var MediaScribeEmbeddedWidget = class {
     this.timestampService = timestampService;
     this.typingScribeService = typingScribeService;
     this.transcriptService = transcriptService;
+    this.mediaTrackService = new MediaTrackService(this.app);
     this.onSettingsChange = onSettingsChange;
     this.onClose = onClose;
     this.onPlay = onPlay;
@@ -3332,9 +3994,9 @@ var MediaScribeEmbeddedWidget = class {
       window.clearTimeout(this.fullscreenIdleTimeout);
       this.fullscreenIdleTimeout = null;
     }
-    if (this.isHoveringControls) return;
+    if (this.isHoveringControls || this.settingsPanelEl && !this.settingsPanelEl.hasClass("is-hidden")) return;
     this.fullscreenIdleTimeout = window.setTimeout(() => {
-      if (this.isFullscreenActive() && !this.isHoveringControls) {
+      if (this.isFullscreenActive() && !this.isHoveringControls && (!this.settingsPanelEl || this.settingsPanelEl.hasClass("is-hidden"))) {
         this.hostEl.addClass("mediascribe-fullscreen-idle");
       }
     }, 2500);
@@ -3346,7 +4008,7 @@ var MediaScribeEmbeddedWidget = class {
     return this.currentSource;
   }
   async loadMedia(source, autoPlay = false) {
-    if (this.currentSource && this.currentSource.url === source.url && this.currentSource.videoId === source.videoId && this.player) {
+    if (this.player && this.currentSource && isSameMediaSource(this.currentSource, source)) {
       return;
     }
     await this.saveCurrentPosition();
@@ -3354,6 +4016,7 @@ var MediaScribeEmbeddedWidget = class {
       this.player.destroy();
       this.player = null;
     }
+    this.mediaTrackService.cleanupTempFiles();
     if (source.isPlaylist && source.playlistItems && source.videoId) {
       const idx = source.playlistItems.findIndex((it) => it.videoId === source.videoId);
       if (idx !== -1) {
@@ -3362,6 +4025,12 @@ var MediaScribeEmbeddedWidget = class {
     }
     this.currentSource = source;
     this.playlistIndex = typeof source.playlistIndex === "number" && source.playlistIndex >= 0 ? source.playlistIndex : 0;
+    this.currentTracksResult = null;
+    this.activeAudioStreamIndex = null;
+    this.activeSubtitleStreamIndex = null;
+    if (this.trackSelectBtn) {
+      this.trackSelectBtn.addClass("is-hidden");
+    }
     if (!source.title && source.videoId) {
       const cachedTitle = getCachedYouTubeTitle(source.videoId);
       if (cachedTitle) {
@@ -3376,6 +4045,8 @@ var MediaScribeEmbeddedWidget = class {
     } else if (this.settings.rememberPlaybackPosition) {
       if (source.videoId && typeof this.settings.storedPlaybackPositions?.[source.videoId] === "number") {
         startPosition = this.settings.storedPlaybackPositions[source.videoId];
+      } else if (source.originalInput && typeof this.settings.storedPlaybackPositions?.[source.originalInput] === "number") {
+        startPosition = this.settings.storedPlaybackPositions[source.originalInput];
       } else if (source.url && typeof this.settings.storedPlaybackPositions?.[source.url] === "number") {
         startPosition = this.settings.storedPlaybackPositions[source.url];
       }
@@ -3411,6 +4082,9 @@ var MediaScribeEmbeddedWidget = class {
     this.updatePlaylistUI();
     this.loadTranscript(source);
     this.resolveYouTubeInfo(source);
+    if (source.isLocal) {
+      this.probeLocalMediaTracks(source);
+    }
     this.restoreSidePanelState(source);
   }
   async resolveYouTubeInfo(source) {
@@ -3539,6 +4213,7 @@ var MediaScribeEmbeddedWidget = class {
     this.buildLoopBar(this.hostEl);
     this.buildResizeHandle(this.hostEl);
     this.buildFullscreenShield(this.hostEl);
+    this.buildSettingsPanel(this.hostEl);
     this.updateSidePanelPosition();
   }
   buildFullscreenShield(parentEl) {
@@ -3611,18 +4286,505 @@ var MediaScribeEmbeddedWidget = class {
     this.captionsOverlayEl.removeClass("is-visible");
   }
   async toggleCaptions() {
-    this.areCaptionsEnabled = !this.areCaptionsEnabled;
-    this.transcriptBtn?.toggleClass("is-active", this.areCaptionsEnabled);
-    this.settings.enableCaptions = this.areCaptionsEnabled;
-    await this.onSettingsChange(this.settings);
     if (this.areCaptionsEnabled) {
-      new import_obsidian14.Notice("MediaScribe: Subtitles ON");
-      this.updateCaptions(this.currentTime);
+      this.disableSubtitles();
     } else {
+      if (this.currentTracksResult?.subtitleTracks?.length) {
+        const defSub = this.currentTracksResult.subtitleTracks.find((s) => s.language === "eng") || this.currentTracksResult.subtitleTracks[0];
+        if (defSub) {
+          await this.switchSubtitleTrack(defSub);
+          return;
+        }
+      }
+      this.areCaptionsEnabled = true;
+      this.settings.enableCaptions = true;
+      await this.onSettingsChange(this.settings);
+      this.updateCaptions(this.currentTime);
+      new import_obsidian14.Notice("MediaScribe: Subtitles ON");
+    }
+  }
+  getMediaStorageKey() {
+    if (!this.currentSource) return "";
+    return this.currentSource.originalInput || this.currentSource.url || "";
+  }
+  async probeLocalMediaTracks(source) {
+    try {
+      const filePath = source.originalInput || source.url;
+      const tracks = await this.mediaTrackService.probeTracks(filePath);
+      if (!tracks || this.currentSource !== source) return;
+      this.currentTracksResult = tracks;
+      const fileKey = this.getMediaStorageKey();
+      if (this.settings.storedAudioTracks && fileKey && this.settings.storedAudioTracks[fileKey] !== void 0) {
+        const savedAudioIndex = this.settings.storedAudioTracks[fileKey];
+        const matchedAudio = tracks.audioTracks.find((t) => t.index === savedAudioIndex);
+        if (matchedAudio) {
+          await this.switchAudioTrack(matchedAudio, false);
+        }
+      }
+      if (this.settings.storedSubtitleTracks && fileKey && this.settings.storedSubtitleTracks[fileKey] !== void 0) {
+        const savedSubIndex = this.settings.storedSubtitleTracks[fileKey];
+        if (savedSubIndex === -1 || savedSubIndex === null) {
+          this.disableSubtitles(false);
+        } else {
+          const matchedSub = tracks.subtitleTracks.find((s) => s.index === savedSubIndex);
+          if (matchedSub) {
+            await this.switchSubtitleTrack(matchedSub, false);
+          }
+        }
+      } else if (this.areCaptionsEnabled && this.currentTranscriptItems.length === 0 && tracks.subtitleTracks.length > 0) {
+        const defSub = tracks.subtitleTracks.find((s) => s.language === "eng") || tracks.subtitleTracks[0];
+        if (defSub) {
+          await this.switchSubtitleTrack(defSub, false);
+        }
+      }
+    } catch (err) {
+      console.warn("[MediaScribe] Local track probing failed:", err);
+    }
+  }
+  showSettingsMenu(event) {
+    if (event) event.stopPropagation();
+    this.toggleSettingsPanel();
+  }
+  showSpeedMenu(event) {
+    if (event) event.stopPropagation();
+    this.openSettingsPanel("speed");
+  }
+  showSubtitlesMenu(event) {
+    if (event) event.stopPropagation();
+    this.openSettingsPanel("subtitles");
+  }
+  showAudioTrackMenu(event) {
+    if (event) event.stopPropagation();
+    this.openSettingsPanel("audio");
+  }
+  buildSettingsPanel(parentEl) {
+    this.settingsPanelEl = parentEl.createDiv({ cls: "mediascribe-settings-panel is-hidden" });
+    this.settingsPanelEl.style.display = "none";
+    this.settingsPanelEl.addEventListener("click", (e) => e.stopPropagation());
+    this.settingsPanelEl.addEventListener("dblclick", (e) => e.stopPropagation());
+    this.settingsPanelEl.addEventListener("pointerdown", (e) => e.stopPropagation());
+    this.settingsPanelEl.addEventListener("mouseenter", () => {
+      this.isHoveringControls = true;
+      this.resetFullscreenIdleTimer();
+    });
+    this.settingsPanelEl.addEventListener("mouseleave", () => {
+      this.isHoveringControls = false;
+      if (this.isFullscreenActive()) {
+        this.resetFullscreenIdleTimer();
+      }
+    });
+    this.onDocPointerDownHandler = (e) => {
+      if (!this.settingsPanelEl || this.settingsPanelEl.hasClass("is-hidden")) return;
+      const target = e.target;
+      if (this.settingsPanelEl.contains(target) || this.settingsBtn?.contains(target)) {
+        return;
+      }
+      this.closeSettingsPanel();
+    };
+    document.addEventListener("pointerdown", this.onDocPointerDownHandler, true);
+  }
+  toggleSettingsPanel() {
+    if (!this.settingsPanelEl) return;
+    if (this.settingsPanelEl.hasClass("is-hidden") || this.settingsPanelEl.style.display === "none") {
+      this.openSettingsPanel("main");
+    } else {
+      this.closeSettingsPanel();
+    }
+  }
+  openSettingsPanel(tab = "main") {
+    if (!this.settingsPanelEl) return;
+    this.activeSettingsTab = tab;
+    this.renderSettingsContent();
+    this.updateSettingsPanelPosition();
+    this.settingsPanelEl.removeClass("is-hidden");
+    this.settingsPanelEl.style.display = "flex";
+  }
+  closeSettingsPanel() {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.addClass("is-hidden");
+    this.settingsPanelEl.style.display = "none";
+  }
+  updateSettingsPanelPosition() {
+    if (!this.settingsPanelEl || !this.settingsBtn) return;
+    if (this.isFullscreenActive()) {
+      this.settingsPanelEl.style.removeProperty("top");
+      this.settingsPanelEl.style.removeProperty("bottom");
+      this.settingsPanelEl.style.removeProperty("right");
+      this.settingsPanelEl.style.removeProperty("left");
+      return;
+    }
+    const hostRect = this.hostEl.getBoundingClientRect();
+    const btnRect = this.settingsBtn.getBoundingClientRect();
+    const bottomOffset = Math.max(8, hostRect.bottom - btnRect.top + 6);
+    const rightOffset = Math.max(8, hostRect.right - btnRect.right);
+    this.settingsPanelEl.style.bottom = `${bottomOffset}px`;
+    this.settingsPanelEl.style.right = `${rightOffset}px`;
+  }
+  renderSettingsContent() {
+    if (!this.settingsPanelEl) return;
+    switch (this.activeSettingsTab) {
+      case "speed":
+        this.renderSpeedSubmenu();
+        break;
+      case "subtitles":
+        this.renderSubtitlesSubmenu();
+        break;
+      case "audio":
+        this.renderAudioSubmenu();
+        break;
+      case "main":
+      default:
+        this.renderMainSettingsMenu();
+        break;
+    }
+  }
+  renderMainSettingsMenu() {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.empty();
+    const contentEl = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-content" });
+    const currentSpeed = this.currentPlaybackRate || 1;
+    const speedRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const speedLeft = speedRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const speedIcon = speedLeft.createSpan();
+    (0, import_obsidian14.setIcon)(speedIcon, "gauge");
+    speedLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Playback Speed" });
+    const speedRight = speedRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    speedRight.createSpan({ text: `${currentSpeed}x` });
+    const speedChevron = speedRight.createSpan();
+    (0, import_obsidian14.setIcon)(speedChevron, "chevron-right");
+    speedRow.addEventListener("click", () => {
+      this.openSettingsPanel("speed");
+    });
+    const isTypingActive = this.typingScribeService.active;
+    const typingRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const typingLeft = typingRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const typingIcon = typingLeft.createSpan();
+    (0, import_obsidian14.setIcon)(typingIcon, "pen-tool");
+    typingLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Auto-Pause While Typing" });
+    const typingRight = typingRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    typingRight.createSpan({ text: isTypingActive ? "On" : "Off" });
+    if (isTypingActive) {
+      const checkSpan = typingRight.createSpan({ cls: "mediascribe-settings-item-check" });
+      (0, import_obsidian14.setIcon)(checkSpan, "check");
+    }
+    typingRow.addEventListener("click", () => {
+      const active = this.typingScribeService.toggle();
+      new import_obsidian14.Notice(`MediaScribe: Auto-Pause While Typing ${active ? "ON" : "OFF"}`);
+      this.renderMainSettingsMenu();
+    });
+    const subLabel = this.areCaptionsEnabled ? this.getActiveSubtitleLabel() || "On" : "Off";
+    const subRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const subLeft = subRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const subIcon = subLeft.createSpan();
+    (0, import_obsidian14.setIcon)(subIcon, "subtitles");
+    subLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Subtitles" });
+    const subRight = subRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    subRight.createSpan({ text: subLabel });
+    const subChevron = subRight.createSpan();
+    (0, import_obsidian14.setIcon)(subChevron, "chevron-right");
+    subRow.addEventListener("click", () => {
+      this.openSettingsPanel("subtitles");
+    });
+    const audioLabel = this.getActiveAudioLabel() || "Default";
+    const audioRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const audioLeft = audioRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const audioIcon = audioLeft.createSpan();
+    (0, import_obsidian14.setIcon)(audioIcon, "headphones");
+    audioLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Audio Track" });
+    const audioRight = audioRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    audioRight.createSpan({ text: audioLabel });
+    const audioChevron = audioRight.createSpan();
+    (0, import_obsidian14.setIcon)(audioChevron, "chevron-right");
+    audioRow.addEventListener("click", () => {
+      this.openSettingsPanel("audio");
+    });
+    const loopRow = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+    const loopLeft = loopRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    const loopIcon = loopLeft.createSpan();
+    (0, import_obsidian14.setIcon)(loopIcon, "repeat");
+    loopLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "A-B Repeat Loop" });
+    const loopRight = loopRow.createDiv({ cls: "mediascribe-settings-item-right" });
+    loopRight.createSpan({ text: this.isLooping ? "On" : "Off" });
+    if (this.isLooping) {
+      const checkSpan = loopRight.createSpan({ cls: "mediascribe-settings-item-check" });
+      (0, import_obsidian14.setIcon)(checkSpan, "check");
+    }
+    loopRow.addEventListener("click", () => {
+      this.toggleLoop();
+      this.renderMainSettingsMenu();
+    });
+  }
+  renderSpeedSubmenu() {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.empty();
+    const header = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-header" });
+    const backIcon = header.createSpan();
+    (0, import_obsidian14.setIcon)(backIcon, "chevron-left");
+    header.createSpan({ text: "Playback Speed" });
+    header.addEventListener("click", () => {
+      this.openSettingsPanel("main");
+    });
+    const contentEl = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-content" });
+    const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+    const currentSpeed = this.currentPlaybackRate || 1;
+    for (const sp of speeds) {
+      const isSelected = Math.abs(currentSpeed - sp) < 0.01;
+      const row = contentEl.createDiv({
+        cls: `mediascribe-settings-item ${isSelected ? "is-selected" : ""}`
+      });
+      const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+      left.createSpan({ cls: "mediascribe-settings-item-label", text: sp === 1 ? "1.0x (Normal)" : `${sp}x` });
+      if (isSelected) {
+        const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+        const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+        (0, import_obsidian14.setIcon)(check, "check");
+      }
+      row.addEventListener("click", () => {
+        this.setPlaybackSpeed(sp);
+        this.openSettingsPanel("main");
+      });
+    }
+  }
+  renderSubtitlesSubmenu() {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.empty();
+    const header = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-header" });
+    const backIcon = header.createSpan();
+    (0, import_obsidian14.setIcon)(backIcon, "chevron-left");
+    header.createSpan({ text: "Subtitles" });
+    header.addEventListener("click", () => {
+      this.openSettingsPanel("main");
+    });
+    const contentEl = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-content" });
+    const isOff = !this.areCaptionsEnabled;
+    const offRow = contentEl.createDiv({
+      cls: `mediascribe-settings-item ${isOff ? "is-selected" : ""}`
+    });
+    const offLeft = offRow.createDiv({ cls: "mediascribe-settings-item-left" });
+    offLeft.createSpan({ cls: "mediascribe-settings-item-label", text: "Off" });
+    if (isOff) {
+      const offRight = offRow.createDiv({ cls: "mediascribe-settings-item-right" });
+      const check = offRight.createSpan({ cls: "mediascribe-settings-item-check" });
+      (0, import_obsidian14.setIcon)(check, "check");
+    }
+    offRow.addEventListener("click", () => {
+      this.disableSubtitles(true);
+      this.openSettingsPanel("main");
+    });
+    if (this.currentTracksResult?.subtitleTracks && this.currentTracksResult.subtitleTracks.length > 0) {
+      for (const sub of this.currentTracksResult.subtitleTracks) {
+        const isSelected = this.areCaptionsEnabled && this.activeSubtitleStreamIndex === sub.index;
+        const row = contentEl.createDiv({
+          cls: `mediascribe-settings-item ${isSelected ? "is-selected" : ""}`
+        });
+        const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+        left.createSpan({ cls: "mediascribe-settings-item-label", text: sub.languageLabel });
+        if (isSelected) {
+          const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+          const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+          (0, import_obsidian14.setIcon)(check, "check");
+        }
+        row.addEventListener("click", async () => {
+          await this.switchSubtitleTrack(sub, true);
+          this.openSettingsPanel("main");
+        });
+      }
+    } else if (this.currentTranscriptItems && this.currentTranscriptItems.length > 0) {
+      const isOn = this.areCaptionsEnabled;
+      const row = contentEl.createDiv({
+        cls: `mediascribe-settings-item ${isOn ? "is-selected" : ""}`
+      });
+      const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+      left.createSpan({ cls: "mediascribe-settings-item-label", text: "Standard Subtitles" });
+      if (isOn) {
+        const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+        const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+        (0, import_obsidian14.setIcon)(check, "check");
+      }
+      row.addEventListener("click", async () => {
+        this.areCaptionsEnabled = true;
+        this.settings.enableCaptions = true;
+        const fileKey = this.getMediaStorageKey();
+        if (fileKey) {
+          if (!this.settings.storedSubtitleTracks) this.settings.storedSubtitleTracks = {};
+          this.settings.storedSubtitleTracks[fileKey] = 0;
+        }
+        await this.onSettingsChange(this.settings);
+        this.updateCaptions(this.currentTime);
+        new import_obsidian14.Notice("MediaScribe: Subtitles ON");
+        this.openSettingsPanel("main");
+      });
+    } else {
+      const row = contentEl.createDiv({ cls: "mediascribe-settings-item" });
+      const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+      left.createSpan({ cls: "mediascribe-settings-item-label", text: "No subtitles available" });
+    }
+  }
+  renderAudioSubmenu() {
+    if (!this.settingsPanelEl) return;
+    this.settingsPanelEl.empty();
+    const header = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-header" });
+    const backIcon = header.createSpan();
+    (0, import_obsidian14.setIcon)(backIcon, "chevron-left");
+    header.createSpan({ text: "Audio Track" });
+    header.addEventListener("click", () => {
+      this.openSettingsPanel("main");
+    });
+    const contentEl = this.settingsPanelEl.createDiv({ cls: "mediascribe-settings-content" });
+    if (this.currentTracksResult?.audioTracks && this.currentTracksResult.audioTracks.length > 0) {
+      for (const track of this.currentTracksResult.audioTracks) {
+        const isSelected = this.activeAudioStreamIndex === track.index || this.activeAudioStreamIndex === null && track.isDefault;
+        const row = contentEl.createDiv({
+          cls: `mediascribe-settings-item ${isSelected ? "is-selected" : ""}`
+        });
+        const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+        left.createSpan({
+          cls: "mediascribe-settings-item-label",
+          text: `${track.languageLabel}${track.isDefault ? " (Default)" : ""}`
+        });
+        if (isSelected) {
+          const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+          const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+          (0, import_obsidian14.setIcon)(check, "check");
+        }
+        row.addEventListener("click", async () => {
+          await this.switchAudioTrack(track, true);
+          this.openSettingsPanel("main");
+        });
+      }
+    } else {
+      const row = contentEl.createDiv({ cls: "mediascribe-settings-item is-selected" });
+      const left = row.createDiv({ cls: "mediascribe-settings-item-left" });
+      left.createSpan({ cls: "mediascribe-settings-item-label", text: "Default Audio" });
+      const right = row.createDiv({ cls: "mediascribe-settings-item-right" });
+      const check = right.createSpan({ cls: "mediascribe-settings-item-check" });
+      (0, import_obsidian14.setIcon)(check, "check");
+    }
+  }
+  getActiveSubtitleLabel() {
+    if (!this.areCaptionsEnabled) return "Off";
+    if (this.activeSubtitleStreamIndex !== null && this.currentTracksResult?.subtitleTracks) {
+      const match = this.currentTracksResult.subtitleTracks.find((s) => s.index === this.activeSubtitleStreamIndex);
+      if (match) return match.languageLabel;
+    }
+    if (this.currentTranscriptItems && this.currentTranscriptItems.length > 0) {
+      return "On";
+    }
+    return "Off";
+  }
+  getActiveAudioLabel() {
+    if (this.activeAudioStreamIndex !== null && this.currentTracksResult?.audioTracks) {
+      const match = this.currentTracksResult.audioTracks.find((t) => t.index === this.activeAudioStreamIndex);
+      if (match) return match.languageLabel;
+    }
+    if (this.currentTracksResult?.audioTracks && this.currentTracksResult.audioTracks.length > 0) {
+      const def = this.currentTracksResult.audioTracks.find((t) => t.isDefault) || this.currentTracksResult.audioTracks[0];
+      return def ? def.languageLabel : "Default";
+    }
+    return "Default";
+  }
+  setPlaybackSpeed(speed) {
+    this.currentPlaybackRate = speed;
+    this.player?.setPlaybackRate(speed);
+    new import_obsidian14.Notice(`MediaScribe: Playback Speed ${speed}x`);
+  }
+  showTrackMenu(event) {
+    this.showSettingsMenu(event);
+  }
+  async switchAudioTrack(track, showNotice = true) {
+    if (!this.currentSource) return;
+    const fileKey = this.getMediaStorageKey();
+    if (fileKey) {
+      if (!this.settings.storedAudioTracks) this.settings.storedAudioTracks = {};
+      this.settings.storedAudioTracks[fileKey] = track.index;
+      await this.onSettingsChange(this.settings);
+    }
+    if (this.activeAudioStreamIndex === track.index) {
+      return;
+    }
+    if (track.isDefault) {
+      this.activeAudioStreamIndex = track.index;
+      this.player?.setSecondaryAudio?.(null);
+      if (showNotice) {
+        new import_obsidian14.Notice(`MediaScribe: Audio: ${track.languageLabel} (Default)`);
+      }
+      return;
+    }
+    if (showNotice) {
+      new import_obsidian14.Notice(`MediaScribe: Loading ${track.languageLabel} audio track...`);
+    }
+    const audioUrl = await this.mediaTrackService.extractAudioTrack(
+      this.currentSource.originalInput || this.currentSource.url,
+      track.index
+    );
+    if (audioUrl) {
+      this.activeAudioStreamIndex = track.index;
+      this.player?.setSecondaryAudio?.(audioUrl);
+      if (showNotice) {
+        new import_obsidian14.Notice(`MediaScribe: Switched audio to ${track.languageLabel}`);
+      }
+    } else {
+      if (showNotice) {
+        new import_obsidian14.Notice("MediaScribe: Failed to extract audio track.");
+      }
+    }
+  }
+  async switchSubtitleTrack(sub, showNotice = true) {
+    if (!this.currentSource) return;
+    const fileKey = this.getMediaStorageKey();
+    if (fileKey) {
+      if (!this.settings.storedSubtitleTracks) this.settings.storedSubtitleTracks = {};
+      this.settings.storedSubtitleTracks[fileKey] = sub.index;
+      await this.onSettingsChange(this.settings);
+    }
+    if (this.activeSubtitleStreamIndex === sub.index && this.currentTranscriptItems && this.currentTranscriptItems.length > 0) {
+      this.areCaptionsEnabled = true;
+      this.settings.enableCaptions = true;
+      this.updateCaptions(this.currentTime);
+      return;
+    }
+    if (showNotice) {
+      new import_obsidian14.Notice(`MediaScribe: Loading ${sub.languageLabel} subtitles...`);
+    }
+    const vtt = await this.mediaTrackService.extractSubtitleVTT(
+      this.currentSource.originalInput || this.currentSource.url,
+      sub.index
+    );
+    if (vtt) {
+      const items = this.transcriptService.parseVTT(vtt);
+      if (items && items.length > 0) {
+        this.currentTranscriptItems = items;
+        this.transcriptPanel?.setItems(items);
+        this.activeSubtitleStreamIndex = sub.index;
+        this.areCaptionsEnabled = true;
+        this.settings.enableCaptions = true;
+        await this.onSettingsChange(this.settings);
+        this.updateCaptions(this.currentTime);
+        if (showNotice) {
+          new import_obsidian14.Notice(`MediaScribe: Subtitles: ${sub.languageLabel}`);
+        }
+        return;
+      }
+    }
+    if (showNotice) {
+      new import_obsidian14.Notice(`MediaScribe: Could not load ${sub.languageLabel} subtitles.`);
+    }
+  }
+  disableSubtitles(showNotice = true) {
+    this.areCaptionsEnabled = false;
+    this.activeSubtitleStreamIndex = null;
+    this.settings.enableCaptions = false;
+    const fileKey = this.getMediaStorageKey();
+    if (fileKey) {
+      if (!this.settings.storedSubtitleTracks) this.settings.storedSubtitleTracks = {};
+      this.settings.storedSubtitleTracks[fileKey] = -1;
+    }
+    this.onSettingsChange(this.settings);
+    this.captionsOverlayEl?.removeClass("is-visible");
+    this.currentCaptionText = "";
+    if (this.captionsTextEl) this.captionsTextEl.setText("");
+    if (showNotice) {
       new import_obsidian14.Notice("MediaScribe: Subtitles OFF");
-      this.captionsOverlayEl?.removeClass("is-visible");
-      this.currentCaptionText = "";
-      if (this.captionsTextEl) this.captionsTextEl.setText("");
     }
   }
   buildHeader(parentEl) {
@@ -3886,31 +5048,6 @@ var MediaScribeEmbeddedWidget = class {
       (0, import_obsidian14.setIcon)(volumeBtn, val === 0 ? "volume-x" : val < 50 ? "volume-1" : "volume-2");
     });
     const rightControls = buttonsRow.createDiv({ cls: "mediascribe-ctrl-group mediascribe-ctrl-right" });
-    const speeds = [1, 1.25, 1.5, 1.75, 2, 0.5, 0.75];
-    let currentSpeedIndex = 0;
-    this.speedBtn = rightControls.createEl("button", {
-      cls: "mediascribe-ctrl-btn mediascribe-speed-btn",
-      attr: { title: "Playback Speed: 1x (Click to cycle)" }
-    });
-    this.speedBtn.setText("1x");
-    this.speedBtn.addEventListener("click", () => {
-      currentSpeedIndex = (currentSpeedIndex + 1) % speeds.length;
-      const speed = speeds[currentSpeedIndex];
-      this.player?.setPlaybackRate(speed);
-      if (this.speedBtn) {
-        this.speedBtn.setText(`${speed}x`);
-        this.speedBtn.setAttribute("title", `Playback Speed: ${speed}x (Click to cycle)`);
-      }
-    });
-    const scribeBtn = rightControls.createEl("button", {
-      cls: `mediascribe-ctrl-btn ${this.typingScribeService.active ? "is-active" : ""}`
-    });
-    setDynamicTooltip(scribeBtn, this.app, "Toggle Auto-Pause While Typing", "mediascribe-toggle-typing-scribe");
-    (0, import_obsidian14.setIcon)(scribeBtn, "pen-tool");
-    scribeBtn.addEventListener("click", () => {
-      const active = this.typingScribeService.toggle();
-      scribeBtn.toggleClass("is-active", active);
-    });
     const timeBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn"
     });
@@ -3919,27 +5056,32 @@ var MediaScribeEmbeddedWidget = class {
     timeBtn.addEventListener("click", () => {
       this.timestampService.insertCurrentTimestamp(this.markdownView);
     });
+    const quoteBtn = rightControls.createEl("button", {
+      cls: "mediascribe-ctrl-btn mediascribe-quote-btn"
+    });
+    setDynamicTooltip(quoteBtn, this.app, "Quote Subtitle with Timestamp", "mediascribe-insert-subtitle-quote", "Ctrl+Shift+I");
+    (0, import_obsidian14.setIcon)(quoteBtn, "quote");
+    quoteBtn.addEventListener("click", () => {
+      this.insertCurrentSubtitleQuote();
+    });
+    quoteBtn.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this.showQuoteContextMenu(e);
+    });
     const snapBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn"
     });
     setDynamicTooltip(snapBtn, this.app, "Take Screenshot", "mediascribe-capture-frame", "Ctrl+Shift+S");
     (0, import_obsidian14.setIcon)(snapBtn, "camera");
     snapBtn.addEventListener("click", () => this.captureScreenshot());
-    this.transcriptBtn = rightControls.createEl("button", {
-      cls: `mediascribe-ctrl-btn mediascribe-cc-btn ${this.areCaptionsEnabled ? "is-active" : ""}`,
-      attr: { title: "Toggle Video Subtitles (CC)" }
+    this.settingsBtn = rightControls.createEl("button", {
+      cls: "mediascribe-ctrl-btn mediascribe-settings-btn",
+      attr: { title: "Settings (Speed, Auto-Pause, Captions, Audio, Loop)" }
     });
-    (0, import_obsidian14.setIcon)(this.transcriptBtn, "subtitles");
-    this.transcriptBtn.addEventListener("click", () => {
-      this.toggleCaptions();
-    });
-    this.loopToggleBtn = rightControls.createEl("button", {
-      cls: `mediascribe-ctrl-btn ${this.isLooping ? "is-active" : ""}`,
-      attr: { title: "A-B Repeat Loop" }
-    });
-    (0, import_obsidian14.setIcon)(this.loopToggleBtn, "repeat");
-    this.loopToggleBtn.addEventListener("click", () => {
-      this.toggleLoop();
+    (0, import_obsidian14.setIcon)(this.settingsBtn, "settings");
+    this.settingsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleSettingsPanel();
     });
     const fullscreenBtn = rightControls.createEl("button", {
       cls: "mediascribe-ctrl-btn",
@@ -3952,6 +5094,7 @@ var MediaScribeEmbeddedWidget = class {
       (0, import_obsidian14.setIcon)(fullscreenBtn, isFs ? "minimize" : "maximize");
       fullscreenBtn.setAttribute("title", isFs ? "Exit Fullscreen" : "Toggle Fullscreen");
       this.hostEl.toggleClass("is-fullscreen", isFs);
+      this.closeSettingsPanel();
       if (isFs) {
         this.resetFullscreenIdleTimer();
       } else {
@@ -4642,6 +5785,145 @@ ${propertyKey}: "${item.source.url}"
       this.playerContainerEl
     );
   }
+  getCurrentSubtitleItem(toleranceSec = 2.5) {
+    const items = this.currentTranscriptItems && this.currentTranscriptItems.length > 0 ? this.currentTranscriptItems : this.transcriptPanel?.getItems() || [];
+    if (!items || items.length === 0) return null;
+    const t = this.currentTime;
+    const direct = items.find((it) => {
+      const end = it.end > it.start ? it.end : it.start + 3.5;
+      return t >= it.start && t <= end;
+    });
+    if (direct) return direct;
+    const recent = items.filter((it) => it.end <= t && t - it.end <= toleranceSec).sort((a, b) => b.end - a.end)[0];
+    if (recent) return recent;
+    const lastBefore = items.filter((it) => it.start <= t).sort((a, b) => b.start - a.start)[0];
+    if (lastBefore && t - lastBefore.start <= 4.5) {
+      return lastBefore;
+    }
+    return null;
+  }
+  async insertCurrentSubtitleQuote(mode) {
+    const action = mode || this.settings.defaultQuoteAction || "quote";
+    let item = this.getCurrentSubtitleItem();
+    const hasAnySubtitlesLoaded = this.activeSubtitleStreamIndex !== null || this.currentTranscriptItems && this.currentTranscriptItems.length > 0;
+    if (!item && !hasAnySubtitlesLoaded && this.currentTracksResult?.subtitleTracks?.length && this.currentSource) {
+      const fileKey = this.getMediaStorageKey();
+      const savedIndex = this.settings.storedSubtitleTracks?.[fileKey];
+      let subToLoad = savedIndex !== void 0 && savedIndex !== -1 ? this.currentTracksResult.subtitleTracks.find((s) => s.index === savedIndex) : null;
+      if (!subToLoad) {
+        subToLoad = this.currentTracksResult.subtitleTracks.find((s) => s.isDefault) || this.currentTracksResult.subtitleTracks.find((s) => s.language === "eng") || this.currentTracksResult.subtitleTracks[0];
+      }
+      if (subToLoad) {
+        await this.switchSubtitleTrack(subToLoad, false);
+        item = this.getCurrentSubtitleItem();
+      }
+    }
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian14.MarkdownView) || this.markdownView;
+    if (!item) {
+      new import_obsidian14.Notice("MediaScribe: No subtitle found at current position. Inserting timestamp.");
+      await this.timestampService.insertCurrentTimestamp(activeView);
+      return;
+    }
+    const cleanRaw = item.text.replace(/<[^>]*>/g, "").replace(/\r?\n+/g, " ").replace(/\s+/g, " ").trim();
+    if (!cleanRaw) {
+      await this.timestampService.insertCurrentTimestamp(activeView);
+      return;
+    }
+    if (action === "clipboard") {
+      await navigator.clipboard.writeText(cleanRaw);
+      const preview2 = cleanRaw.length > 40 ? `${cleanRaw.slice(0, 40)}...` : cleanRaw;
+      new import_obsidian14.Notice(`MediaScribe: Copied to clipboard: "${preview2}"`);
+      return;
+    }
+    const cleanText = sanitizeSubtitleForMarkdown(cleanRaw);
+    if (!activeView || !activeView.editor) {
+      new import_obsidian14.Notice(`MediaScribe [${formatSeconds(item.start)}]: ${cleanRaw}`);
+      return;
+    }
+    const editor = activeView.editor;
+    const cursor = editor.getCursor();
+    const currentLine = editor.getLine(cursor.line);
+    if (action === "dialogue_only") {
+      let snippet2 = "";
+      if (currentLine.trim().length === 0) {
+        snippet2 = `${cleanText}
+
+`;
+        editor.replaceRange(snippet2, { line: cursor.line, ch: 0 });
+        editor.setCursor({ line: cursor.line + 2, ch: 0 });
+      } else {
+        editor.replaceSelection(` ${cleanText} `);
+      }
+      const preview2 = cleanText.length > 40 ? `${cleanText.slice(0, 40)}...` : cleanText;
+      new import_obsidian14.Notice(`MediaScribe: Inserted dialogue "${preview2}"`);
+      return;
+    }
+    let formattedTime = "";
+    if (action === "range") {
+      const endTime = item.end > item.start ? item.end : item.start + 3;
+      formattedTime = this.timestampService.formatTimestampRange(item.start, endTime);
+    } else {
+      formattedTime = this.timestampService.formatTimestamp(item.start);
+    }
+    let snippet = "";
+    if (action === "bullet") {
+      snippet = `- ${formattedTime} ${cleanText}
+`;
+      if (currentLine.trim().length === 0) {
+        editor.replaceRange(snippet, { line: cursor.line, ch: 0 });
+        editor.setCursor({ line: cursor.line + 1, ch: 0 });
+      } else {
+        editor.replaceSelection(`
+${snippet}`);
+      }
+    } else {
+      if (currentLine.trim().length === 0) {
+        snippet = `> ${formattedTime} ${cleanText}
+
+`;
+        editor.replaceRange(snippet, { line: cursor.line, ch: 0 });
+        editor.setCursor({ line: cursor.line + 2, ch: 0 });
+      } else {
+        snippet = `
+
+> ${formattedTime} ${cleanText}
+
+`;
+        editor.replaceSelection(snippet);
+      }
+    }
+    const preview = cleanText.length > 40 ? `${cleanText.slice(0, 40)}...` : cleanText;
+    new import_obsidian14.Notice(`MediaScribe: Quoted [${formatSeconds(item.start)}] "${preview}"`);
+  }
+  showQuoteContextMenu(event) {
+    const item = this.getCurrentSubtitleItem();
+    if (!item) {
+      new import_obsidian14.Notice("MediaScribe: No subtitle found at current playback position.");
+      return;
+    }
+    const cleanText = item.text.replace(/<[^>]*>/g, "").replace(/\r?\n+/g, " ").replace(/\s+/g, " ").trim();
+    const currentDefault = this.settings.defaultQuoteAction || "quote";
+    const menu = new import_obsidian14.Menu();
+    menu.addItem((it) => {
+      it.setTitle(`Quote Dialogue (> [time] text)${currentDefault === "quote" ? " (Default)" : ""}`).setIcon("quote").setChecked(currentDefault === "quote").onClick(() => this.insertCurrentSubtitleQuote("quote"));
+    });
+    menu.addItem((it) => {
+      it.setTitle(`Quote with A-B Loop Range (> [start - end] text)${currentDefault === "range" ? " (Default)" : ""}`).setIcon("repeat").setChecked(currentDefault === "range").onClick(() => this.insertCurrentSubtitleQuote("range"));
+    });
+    menu.addItem((it) => {
+      it.setTitle(`Bullet Point (- [time] text)${currentDefault === "bullet" ? " (Default)" : ""}`).setIcon("list").setChecked(currentDefault === "bullet").onClick(() => this.insertCurrentSubtitleQuote("bullet"));
+    });
+    menu.addItem((it) => {
+      it.setTitle(`Dialogue Only without Timestamp${currentDefault === "dialogue_only" ? " (Default)" : ""}`).setIcon("type").setChecked(currentDefault === "dialogue_only").onClick(() => this.insertCurrentSubtitleQuote("dialogue_only"));
+    });
+    menu.addItem((it) => {
+      it.setTitle(`Copy Subtitle to Clipboard${currentDefault === "clipboard" ? " (Default)" : ""}`).setIcon("copy").setChecked(currentDefault === "clipboard").onClick(async () => {
+        await navigator.clipboard.writeText(cleanText);
+        new import_obsidian14.Notice("MediaScribe: Subtitle copied to clipboard.");
+      });
+    });
+    menu.showAtMouseEvent(event);
+  }
   bindPlayerEvents() {
     if (!this.player) return;
     this.player.on("ready", () => {
@@ -4722,9 +6004,19 @@ ${propertyKey}: "${item.source.url}"
         }
       }
     });
+    this.player.on("error", (err) => {
+      console.warn("[MediaScribe] Player playback error:", err);
+      if (this.currentSource?.isLocal) {
+        new import_obsidian14.Notice(
+          "MediaScribe: Could not play local media file. If this is an MKV or HEVC video, its audio/video codec may not be supported by Chromium.",
+          8e3
+        );
+      }
+    });
     this.player.on("ended", () => {
       this.hasEnded = true;
       if (this.currentSource?.videoId) this.completedVideoIds.add(this.currentSource.videoId);
+      if (this.currentSource?.originalInput) this.completedVideoIds.add(this.currentSource.originalInput);
       if (this.currentSource?.url) this.completedVideoIds.add(this.currentSource.url);
       this.updatePlayState(false, true);
       this.saveCurrentPosition(true);
@@ -4764,13 +6056,24 @@ ${propertyKey}: "${item.source.url}"
     this.transcriptPanel.setLoading(true);
     this.currentTranscriptItems = [];
     try {
-      if (source.isLocal && source.localFile) {
-        const items = await this.transcriptService.loadLocalTranscriptForFile(source.localFile);
-        if (items && items.length > 0) {
-          this.currentTranscriptItems = items;
-          this.transcriptPanel.setItems(items);
-          this.updateCaptions(this.currentTime);
-          return;
+      if (source.isLocal) {
+        if (source.localFile) {
+          const items = await this.transcriptService.loadLocalTranscriptForFile(source.localFile);
+          if (items && items.length > 0) {
+            this.currentTranscriptItems = items;
+            this.transcriptPanel.setItems(items);
+            this.updateCaptions(this.currentTime);
+            return;
+          }
+        }
+        if (source.originalInput) {
+          const items = await this.transcriptService.loadLocalTranscriptFromPath(source.originalInput);
+          if (items && items.length > 0) {
+            this.currentTranscriptItems = items;
+            this.transcriptPanel.setItems(items);
+            this.updateCaptions(this.currentTime);
+            return;
+          }
         }
       }
       if (source.type === "youtube" && source.videoId) {
@@ -4828,6 +6131,9 @@ ${propertyKey}: "${item.source.url}"
     if (this.currentSource.url) {
       this.settings.storedPlaybackPositions[this.currentSource.url] = time;
     }
+    if (this.currentSource.originalInput) {
+      this.settings.storedPlaybackPositions[this.currentSource.originalInput] = time;
+    }
     if (this.currentSource.videoId) {
       this.settings.storedPlaybackPositions[this.currentSource.videoId] = time;
     }
@@ -4837,6 +6143,9 @@ ${propertyKey}: "${item.source.url}"
     const now = Date.now();
     if (this.currentSource.url) {
       this.settings.storedPlaybackLastAccessed[this.currentSource.url] = now;
+    }
+    if (this.currentSource.originalInput) {
+      this.settings.storedPlaybackLastAccessed[this.currentSource.originalInput] = now;
     }
     if (this.currentSource.videoId) {
       this.settings.storedPlaybackLastAccessed[this.currentSource.videoId] = now;
@@ -5026,6 +6335,14 @@ ${propertyKey}: "${item.source.url}"
       window.clearTimeout(this.fullscreenIdleTimeout);
       this.fullscreenIdleTimeout = null;
     }
+    if (this.onDocPointerDownHandler) {
+      document.removeEventListener("pointerdown", this.onDocPointerDownHandler, true);
+      this.onDocPointerDownHandler = null;
+    }
+    if (this.settingsPanelEl) {
+      this.settingsPanelEl.remove();
+      this.settingsPanelEl = null;
+    }
     window.removeEventListener("resize", this.onResizeHandler);
     window.removeEventListener("orientationchange", this.onResizeHandler);
     this.saveCurrentPosition();
@@ -5034,6 +6351,7 @@ ${propertyKey}: "${item.source.url}"
       this.player.destroy();
       this.player = null;
     }
+    this.mediaTrackService.cleanupTempFiles();
     this.typingScribeService.setPlayer(null);
     this.markdownView.contentEl.removeClass(
       "mediascribe-dock-vertical",
@@ -5161,8 +6479,14 @@ var EmbeddedPlayerManager = class {
           }
         );
         this.activeWidgets.set(view, widget);
+        await widget.loadMedia(source);
+      } else {
+        const current = widget.getCurrentSource();
+        if (current && isSameMediaSource(current, source)) {
+          return;
+        }
+        await widget.loadMedia(source);
       }
-      await widget.loadMedia(source);
     } else {
       this.dismountView(view);
     }
@@ -5334,49 +6658,9 @@ function isOfficialTimestampLink(a) {
   const href = a.getAttribute("href") || "";
   const dataHref = a.getAttribute("data-href") || "";
   const text = a.textContent?.trim() || "";
-  if (href === "" || href === "#" || href === "()" || href.endsWith("#")) return true;
-  if (href.startsWith("#t=") || dataHref.startsWith("#t=") || href.startsWith("http://") || href.startsWith("https://")) return true;
-  if (href && href !== text && decodeURI(href) !== text && !a.classList.contains("is-unresolved")) return true;
+  if (parseTimestampRange(text) || parseTimestampRange(href) || parseTimestampRange(dataHref)) return true;
+  if (parseTimestamp(text) !== null || parseTimestamp(href) !== null || parseTimestamp(dataHref) !== null) return true;
   return false;
-}
-function getTimestampFromLinkElement(linkEl, cmLine) {
-  const text = linkEl.textContent?.trim() || "";
-  const directRange = parseTimestampRange(text);
-  if (directRange) return { type: "range", start: directRange.start, end: directRange.end };
-  const directSec = parseTimestamp(text);
-  if (directSec !== null) return { type: "single", text };
-  let prev = linkEl.previousElementSibling;
-  let steps = 0;
-  while (prev && steps < 5) {
-    const pText = prev.textContent?.trim() || "";
-    const pRange = parseTimestampRange(pText);
-    if (pRange) return { type: "range", start: pRange.start, end: pRange.end };
-    const pSec = parseTimestamp(pText);
-    if (pSec !== null) return { type: "single", text: pText };
-    prev = prev.previousElementSibling;
-    steps++;
-  }
-  let next = linkEl.nextElementSibling;
-  steps = 0;
-  while (next && steps < 5) {
-    const nText = next.textContent?.trim() || "";
-    const nRange = parseTimestampRange(nText);
-    if (nRange) return { type: "range", start: nRange.start, end: nRange.end };
-    const nSec = parseTimestamp(nText);
-    if (nSec !== null) return { type: "single", text: nText };
-    next = next.nextElementSibling;
-    steps++;
-  }
-  const lineText = cmLine.textContent || "";
-  const timestamps = extractTimestampsFromText(lineText);
-  if (timestamps.length === 1 && (text === "" || text === "()" || text === "(" || text === ")" || linkEl.classList.contains("cm-url") || linkEl.classList.contains("cm-formatting-link"))) {
-    const ts = timestamps[0];
-    if (ts.isRange && ts.endSeconds !== void 0) {
-      return { type: "range", start: ts.timeSeconds, end: ts.endSeconds };
-    }
-    return { type: "single", text: ts.displayText };
-  }
-  return null;
 }
 var MediaScribePlugin = class extends import_obsidian16.Plugin {
   constructor() {
@@ -5450,12 +6734,20 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       })
     );
     let metaDebounce = null;
+    const noteMediaFrontmatterSnapshot = /* @__PURE__ */ new Map();
     this.registerEvent(
       this.app.metadataCache.on("changed", (file) => {
         if (metaDebounce !== null) window.clearTimeout(metaDebounce);
         metaDebounce = window.setTimeout(() => {
           const view = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
           if (view && view.file?.path === file.path) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            const currentSnapshot = this.getMediaFrontmatterSnapshot(cache);
+            const lastSnapshot = noteMediaFrontmatterSnapshot.get(file.path);
+            if (lastSnapshot !== void 0 && lastSnapshot === currentSnapshot) {
+              return;
+            }
+            noteMediaFrontmatterSnapshot.set(file.path, currentSnapshot);
             this.embeddedManager.syncView(view);
           }
         }, 400);
@@ -5668,6 +6960,79 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       }
     });
     this.addCommand({
+      id: "mediascribe-insert-subtitle-quote",
+      name: "Quote current subtitle (default quote action)",
+      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "i" }],
+      callback: () => {
+        const embedded = this.embeddedManager.getActiveEmbeddedWidget();
+        if (embedded) {
+          embedded.insertCurrentSubtitleQuote();
+        } else {
+          new import_obsidian16.Notice("MediaScribe: No active media player found.");
+        }
+      }
+    });
+    this.addCommand({
+      id: "mediascribe-quote-timestamp",
+      name: "Quote current subtitle with timestamp (> [time] text)",
+      callback: () => {
+        const embedded = this.embeddedManager.getActiveEmbeddedWidget();
+        if (embedded) {
+          embedded.insertCurrentSubtitleQuote("quote");
+        } else {
+          new import_obsidian16.Notice("MediaScribe: No active media player found.");
+        }
+      }
+    });
+    this.addCommand({
+      id: "mediascribe-quote-range",
+      name: "Quote current subtitle with A-B loop range (> [start - end] text)",
+      callback: () => {
+        const embedded = this.embeddedManager.getActiveEmbeddedWidget();
+        if (embedded) {
+          embedded.insertCurrentSubtitleQuote("range");
+        } else {
+          new import_obsidian16.Notice("MediaScribe: No active media player found.");
+        }
+      }
+    });
+    this.addCommand({
+      id: "mediascribe-quote-bullet",
+      name: "Quote current subtitle as bullet point (- [time] text)",
+      callback: () => {
+        const embedded = this.embeddedManager.getActiveEmbeddedWidget();
+        if (embedded) {
+          embedded.insertCurrentSubtitleQuote("bullet");
+        } else {
+          new import_obsidian16.Notice("MediaScribe: No active media player found.");
+        }
+      }
+    });
+    this.addCommand({
+      id: "mediascribe-quote-dialogue-only",
+      name: "Insert current subtitle dialogue only (without timestamp)",
+      callback: () => {
+        const embedded = this.embeddedManager.getActiveEmbeddedWidget();
+        if (embedded) {
+          embedded.insertCurrentSubtitleQuote("dialogue_only");
+        } else {
+          new import_obsidian16.Notice("MediaScribe: No active media player found.");
+        }
+      }
+    });
+    this.addCommand({
+      id: "mediascribe-quote-clipboard",
+      name: "Copy current subtitle dialogue to clipboard",
+      callback: () => {
+        const embedded = this.embeddedManager.getActiveEmbeddedWidget();
+        if (embedded) {
+          embedded.insertCurrentSubtitleQuote("clipboard");
+        } else {
+          new import_obsidian16.Notice("MediaScribe: No active media player found.");
+        }
+      }
+    });
+    this.addCommand({
       id: "mediascribe-capture-frame",
       name: "Capture video frame screenshot into note",
       hotkeys: [{ modifiers: ["Mod", "Shift"], key: "s" }],
@@ -5780,28 +7145,6 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
     this.app.workspace.openLinkText = async (linktext, sourcePath, newLeaf, openViewState) => {
       const trimmed = (linktext || "").trim();
       if (trimmed === "" || trimmed === "()" || trimmed === "( )" || trimmed === "#" || trimmed.startsWith("(") && trimmed.endsWith(")")) {
-        const activeView = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
-        if (activeView && activeView.editor) {
-          const cursor = activeView.editor.getCursor();
-          const line = activeView.editor.getLine(cursor.line) || "";
-          const timestamps = extractTimestampsFromText(line);
-          if (timestamps.length > 0) {
-            let best = timestamps[0];
-            let bestDist = 999999;
-            for (const ts of timestamps) {
-              const dist = Math.abs(cursor.ch - (ts.index + ts.length / 2));
-              if (dist < bestDist) {
-                bestDist = dist;
-                best = ts;
-              }
-            }
-            if (best.isRange && best.endSeconds !== void 0) {
-              this.handleSetLoopRange(best.timeSeconds, best.endSeconds, true);
-            } else {
-              this.handleTimestampJump(best.displayText);
-            }
-          }
-        }
         return;
       }
       const range = parseTimestampRange(trimmed);
@@ -5820,11 +7163,117 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       this.app.workspace.openLinkText = origOpenLinkText;
     });
   }
+  findTimestampAtPointer(target, evt, cmLine) {
+    const directLink = target.closest(".cm-link, .cm-hmd-internal-link");
+    if (directLink) {
+      const linkText = directLink.textContent?.trim() || "";
+      const range = parseTimestampRange(linkText);
+      if (range) return { type: "range", start: range.start, end: range.end };
+      const sec = parseTimestamp(linkText);
+      if (sec !== null) return { type: "single", seconds: sec };
+    }
+    const formattingOrUrl = target.closest(
+      ".cm-formatting, .cm-formatting-link, .cm-formatting-link-string, .cm-url, .cm-underline"
+    );
+    if (formattingOrUrl) {
+      let sib = formattingOrUrl.previousElementSibling;
+      let count = 0;
+      while (sib && count < 4) {
+        if (sib.classList.contains("cm-link") || sib.classList.contains("cm-hmd-internal-link")) {
+          const sText = sib.textContent?.trim() || "";
+          const range = parseTimestampRange(sText);
+          if (range) return { type: "range", start: range.start, end: range.end };
+          const sec = parseTimestamp(sText);
+          if (sec !== null) return { type: "single", seconds: sec };
+        }
+        sib = sib.previousElementSibling;
+        count++;
+      }
+      sib = formattingOrUrl.nextElementSibling;
+      count = 0;
+      while (sib && count < 4) {
+        if (sib.classList.contains("cm-link") || sib.classList.contains("cm-hmd-internal-link")) {
+          const sText = sib.textContent?.trim() || "";
+          const range = parseTimestampRange(sText);
+          if (range) return { type: "range", start: range.start, end: range.end };
+          const sec = parseTimestamp(sText);
+          if (sec !== null) return { type: "single", seconds: sec };
+        }
+        sib = sib.nextElementSibling;
+        count++;
+      }
+      if (formattingOrUrl.classList.contains("cm-url")) {
+        const uText = formattingOrUrl.textContent?.trim() || "";
+        const uRange = parseTimestampRange(uText);
+        if (uRange) return { type: "range", start: uRange.start, end: uRange.end };
+        const uSec = parseTimestamp(uText);
+        if (uSec !== null) return { type: "single", seconds: uSec };
+      }
+    }
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian16.MarkdownView);
+    if (activeView && activeView.editor) {
+      const cm = activeView.editor.cm;
+      let clickPos = null;
+      if (cm && typeof cm.posAtCoords === "function") {
+        try {
+          const offset = cm.posAtCoords({ x: evt.clientX, y: evt.clientY });
+          if (typeof offset === "number" && offset >= 0) {
+            clickPos = activeView.editor.offsetToPos(offset);
+          }
+        } catch {
+        }
+      }
+      if (!clickPos && cm && typeof cm.posAtDOM === "function") {
+        try {
+          const offset = cm.posAtDOM(target);
+          if (typeof offset === "number" && offset >= 0) {
+            clickPos = activeView.editor.offsetToPos(offset);
+          }
+        } catch {
+        }
+      }
+      if (clickPos) {
+        const lineText2 = activeView.editor.getLine(clickPos.line) || "";
+        const timestamps2 = extractTimestampsFromText(lineText2);
+        if (timestamps2.length > 0) {
+          let best = null;
+          let minDistance = 999999;
+          for (const ts of timestamps2) {
+            const start = ts.index;
+            const end = ts.index + ts.length;
+            if (clickPos.ch >= start - 3 && clickPos.ch <= end + 3) {
+              const dist = Math.abs(clickPos.ch - (start + end) / 2);
+              if (dist < minDistance) {
+                minDistance = dist;
+                best = ts;
+              }
+            }
+          }
+          if (best) {
+            if (best.isRange && best.endSeconds !== void 0) {
+              return { type: "range", start: best.timeSeconds, end: best.endSeconds };
+            }
+            return { type: "single", seconds: best.timeSeconds };
+          }
+        }
+      }
+    }
+    const lineText = cmLine.textContent || "";
+    const timestamps = extractTimestampsFromText(lineText);
+    if (timestamps.length === 1 && target.closest(".cm-link, .cm-url, .cm-formatting, .cm-underline")) {
+      const ts = timestamps[0];
+      if (ts.isRange && ts.endSeconds !== void 0) {
+        return { type: "range", start: ts.timeSeconds, end: ts.endSeconds };
+      }
+      return { type: "single", seconds: ts.timeSeconds };
+    }
+    return null;
+  }
   registerTimestampClickHandler() {
     let lastActionTime = 0;
     const triggerAction = (action) => {
       const now = Date.now();
-      if (now - lastActionTime > 300) {
+      if (now - lastActionTime > 250) {
         lastActionTime = now;
         action();
       }
@@ -5833,7 +7282,7 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       const target = evt.target;
       if (!target) return;
       if (target.closest(
-        "code, pre, .cm-inline-code, .HyperMD-codeblock, .cm-formatting-code, .cm-comment"
+        "code, pre, .HyperMD-codeblock, .cm-formatting-code, .cm-comment"
       )) {
         return;
       }
@@ -5867,12 +7316,10 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
       }
       const anchor = target.closest("a");
       if (anchor) {
-        if (!isOfficialTimestampLink(anchor)) {
-          return;
-        }
+        const text = anchor.textContent?.trim() || "";
         const href = anchor.getAttribute("href") || "";
-        const text = anchor.innerText.trim();
-        const range = parseTimestampRange(text) || parseTimestampRange(href);
+        const dataHref = anchor.getAttribute("data-href") || "";
+        const range = parseTimestampRange(text) || parseTimestampRange(href) || parseTimestampRange(dataHref);
         if (range) {
           evt.preventDefault();
           evt.stopPropagation();
@@ -5882,36 +7329,32 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
           });
           return;
         }
-        if (href.startsWith("#t=") || parseTimestamp(href) !== null || parseTimestamp(text) !== null) {
+        const sec = parseTimestamp(text) ?? parseTimestamp(href) ?? parseTimestamp(dataHref);
+        if (sec !== null) {
           evt.preventDefault();
           evt.stopPropagation();
           evt.stopImmediatePropagation();
           triggerAction(() => {
-            this.handleTimestampJump(href || text);
+            this.handleTimestampJump(formatSeconds(sec));
           });
           return;
         }
       }
-      const linkEl = target.closest(".cm-link, .cm-url, .cm-hmd-internal-link, .cm-formatting-link");
       const cmLine = target.closest(".cm-line");
-      if (linkEl && cmLine) {
-        const lineText = cmLine.textContent || "";
-        const timestamps = extractTimestampsFromText(lineText);
-        if (timestamps.length > 0) {
-          const result = getTimestampFromLinkElement(linkEl, cmLine);
-          if (result) {
-            evt.preventDefault();
-            evt.stopPropagation();
-            evt.stopImmediatePropagation();
-            triggerAction(() => {
-              if (result.type === "range") {
-                this.handleSetLoopRange(result.start, result.end, true);
-              } else {
-                this.handleTimestampJump(result.text);
-              }
-            });
-            return;
-          }
+      if (cmLine) {
+        const match = this.findTimestampAtPointer(target, evt, cmLine);
+        if (match) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          evt.stopImmediatePropagation();
+          triggerAction(() => {
+            if (match.type === "range") {
+              this.handleSetLoopRange(match.start, match.end, true);
+            } else {
+              this.handleTimestampJump(formatSeconds(match.seconds));
+            }
+          });
+          return;
         }
       }
     };
@@ -5958,7 +7401,8 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
         if (!isOfficialTimestampLink(a)) return;
         const text = a.textContent?.trim() || "";
         const href = a.getAttribute("href") || "";
-        const range = parseTimestampRange(text) || parseTimestampRange(href);
+        const dataHref = a.getAttribute("data-href") || "";
+        const range = parseTimestampRange(text) || parseTimestampRange(href) || parseTimestampRange(dataHref);
         if (range) {
           a.classList.add("mediascribe-timestamp-link", "mediascribe-loop-range-link");
           a.setAttribute("data-loop-range", `${range.start}-${range.end}`);
@@ -5971,7 +7415,7 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
           a.createSpan({ cls: "mediascribe-pill-text", text: `${formatSeconds(range.start)} - ${formatSeconds(range.end)}` });
           return;
         }
-        const sec = parseTimestamp(text) ?? parseTimestamp(href);
+        const sec = parseTimestamp(text) ?? parseTimestamp(href) ?? parseTimestamp(dataHref);
         if (sec !== null) {
           a.classList.add("mediascribe-timestamp-link");
           a.setAttribute("data-timestamp", formatSeconds(sec));
@@ -6048,5 +7492,20 @@ var MediaScribePlugin = class extends import_obsidian16.Plugin {
         item.parent.replaceChild(frag, item.node);
       }
     });
+  }
+  getMediaFrontmatterSnapshot(cache) {
+    if (!cache || !cache.frontmatter) return "";
+    const fm = cache.frontmatter;
+    const props = [
+      ...this.settings.mediaPropertyNames || [],
+      this.settings.playlistNoteProperty
+    ].filter(Boolean);
+    const snapshot = {};
+    for (const p of props) {
+      if (fm[p] !== void 0) {
+        snapshot[p] = fm[p];
+      }
+    }
+    return JSON.stringify(snapshot);
   }
 };
